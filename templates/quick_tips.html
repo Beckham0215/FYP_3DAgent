@@ -1,0 +1,903 @@
+{% extends "base.html" %}
+{% block title %}Quick Tips & Help · 3DAgent{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <div class="page-title">
+    <h1>💡 Quick Tips & User Guide</h1>
+    <p>Learn how to make the most of 3DAgent's features for exploring and organizing your spaces.</p>
+  </div>
+  <div class="page-header-actions">
+    <a href="{{ url_for('main.dashboard') }}" class="btn ghost">← Back to Dashboard</a>
+  </div>
+</div>
+
+<div class="page-main">
+
+  <!-- ══════════════════════════════════════════
+       SECTION 1: GETTING STARTED
+       ══════════════════════════════════════════ -->
+  <section class="card space-lg">
+    <h2>🚀 Getting Started</h2>
+    
+    <div class="tips-grid">
+      <div class="tip-card">
+        <div class="tip-icon">📍</div>
+        <h3>1. Create Your First Space</h3>
+        <p>From the dashboard, click "➕ New Space" and enter your Matterport Space ID (SID). You can find this in the space's URL or from the space creator.</p>
+        <code class="tip-code">Format: Usually a long alphanumeric string</code>
+      </div>
+
+      <div class="tip-card">
+        <div class="tip-icon">👁️</div>
+        <h3>2. Open the 3D Viewer</h3>
+        <p>Click "Open Viewer" on any space card. The viewer loads with your 3D environment and AI assistant ready to help.</p>
+        <code class="tip-code">💻 Tip: Works on desktop, tablet, and mobile</code>
+      </div>
+
+      <div class="tip-card">
+        <div class="tip-icon">🎯</div>
+        <h3>3. Explore the Layout</h3>
+        <p>Familiarize yourself with the viewer layout:</p>
+        <ul>
+          <li>📍 <strong>Location Tracker</strong> (top-left) - Shows current position</li>
+          <li>🏷️ <strong>Quick Tag Panel</strong> (bottom-left) - Mark locations instantly</li>
+          <li>💬 <strong>AI Chat</strong> (right) - Talk to your assistant</li>
+        </ul>
+      </div>
+
+      <div class="tip-card">
+        <div class="tip-icon">🔄</div>
+        <h3>4. Minimize Panels as Needed</h3>
+        <p>Click the "−" button on any panel to minimize it. Your preferences are saved automatically. Click "+" to expand again.</p>
+        <code class="tip-code">✓ State persists even after refresh</code>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════
+       SECTION 2: MARKING LOCATIONS
+       ══════════════════════════════════════════ -->
+  <section class="card space-lg">
+    <h2>🏷️ Marking Locations (Most Important!)</h2>
+    
+    <p class="highlight-box">
+      <strong>💡 Pro Tip:</strong> Mark key locations first (Kitchen, Bedroom, Office, Living Room). This unlocks activity-based navigation and makes future exploration much easier.
+    </p>
+
+    <div class="tips-grid">
+      <div class="tip-card">
+        <div class="tip-icon">⌨️</div>
+        <h3>Method 1: Quick Tag Panel</h3>
+        <p><strong>Fastest way to mark:</strong></p>
+        <ol>
+          <li>Navigate to a location</li>
+          <li>Look at bottom-left panel</li>
+          <li>Enter location name (e.g., "Kitchen")</li>
+          <li>Optionally add category (e.g., "Room")</li>
+          <li>Click "✓ Save Location"</li>
+        </ol>
+      </div>
+
+      <div class="tip-card">
+        <div class="tip-icon">🎤</div>
+        <h3>Method 2: Voice Command</h3>
+        <p><strong>Use natural language:</strong></p>
+        <ul>
+          <li>"Mark this as Kitchen"</li>
+          <li>"Tag this place as Bedroom"</li>
+          <li>"Label this as Office"</li>
+          <li>"Help me mark this location as Living Room"</li>
+        </ul>
+        <code class="tip-code">✓ The AI will confirm when done</code>
+      </div>
+
+      <div class="tip-card">
+        <div class="tip-icon">⚙️</div>
+        <h3>Method 3: Asset Management Page</h3>
+        <p><strong>For bulk editing:</strong></p>
+        <ol>
+          <li>Click "Manage Assets" from dashboard</li>
+          <li>Section 1: Navigation Locations</li>
+          <li>Enter: Location name, Sweep UUID, category</li>
+          <li>Click "✓ Add Location"</li>
+        </ol>
+      </div>
+
+      <div class="tip-card">
+        <div class="tip-icon">✏️</div>
+        <h3>Edit or Delete Locations</h3>
+        <p><strong>Need to update a location?</strong></p>
+        <ol>
+          <li>Go to "Manage Assets"</li>
+          <li>Find the location in the table</li>
+          <li>Click "✏️ Edit" to modify</li>
+          <li>Click "🗑️" to delete</li>
+        </ol>
+      </div>
+    </div>
+
+    <div class="naming-guide">
+      <h3>💬 Naming Tips</h3>
+      <table class="data-table" style="margin-top: var(--spacing-md);">
+        <thead>
+          <tr>
+            <th>✅ Good Names</th>
+            <th>❌ Poor Names</th>
+            <th>Why</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>Kitchen</code></td>
+            <td><code>kitch</code>, <code>K</code></td>
+            <td>Clear and consistent</td>
+          </tr>
+          <tr>
+            <td><code>Master Bedroom</code></td>
+            <td><code>Master Bed</code>, <code>BR1</code></td>
+            <td>AI understands better</td>
+          </tr>
+          <tr>
+            <td><code>Bathroom 1</code></td>
+            <td><code>Bath</code>, <code>Toilet</code></td>
+            <td>Specific but natural</td>
+          </tr>
+          <tr>
+            <td><code>Home Office</code></td>
+            <td><code>Work</code>, <code>Desk</code></td>
+            <td>Descriptive location</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════
+       SECTION 3: AI NAVIGATION
+       ══════════════════════════════════════════ -->
+  <section class="card space-lg">
+    <h2>🗺️ AI-Powered Navigation</h2>
+
+    <div class="tips-grid">
+      <div class="tip-card">
+        <div class="tip-icon">🎯</div>
+        <h3>Navigate to Marked Locations</h3>
+        <p><strong>Once you've marked locations, use these commands:</strong></p>
+        <ul>
+          <li>"Take me to the kitchen"</li>
+          <li>"Go to bedroom 1"</li>
+          <li>"Navigate to the office"</li>
+          <li>"Show me the living room"</li>
+        </ul>
+        <code class="tip-code">⚠️ Location must be marked first</code>
+      </div>
+
+      <div class="tip-card">
+        <div class="tip-icon">🍳</div>
+        <h3>Activity-Based Navigation (SMART!)</h3>
+        <p><strong>Say what you want to do, not where to go:</strong></p>
+        <ul>
+          <li>"I'm hungry" → 🍽️ Kitchen</li>
+          <li>"I want to cook" → 🍳 Kitchen</li>
+          <li>"I want to sleep" → 🛏️ Bedroom</li>
+          <li>"I need to work" → 💼 Office</li>
+          <li>"I want to relax" → 🛋️ Living Room</li>
+          <li>"I need a shower" → 🚿 Bathroom</li>
+        </ul>
+        <code class="tip-code">✨ Most natural way to navigate</code>
+      </div>
+
+      <div class="tip-card">
+        <div class="tip-icon">💬</div>
+        <h3>Natural Conversation</h3>
+        <p><strong>The AI understands context:</strong></p>
+        <ul>
+          <li>"What's in this room?"</li>
+          <li>"Tell me about the layout"</li>
+          <li>"Where can I find the bathroom?"</li>
+          <li>"How many bedrooms?"</li>
+        </ul>
+        <code class="tip-code">📝 Ask questions freely</code>
+      </div>
+
+      <div class="tip-card">
+        <div class="tip-icon">🔄</div>
+        <h3>Chat Tips</h3>
+        <p><strong>Getting the best results:</strong></p>
+        <ul>
+          <li>Use clear, natural language</li>
+          <li>Be specific about location/action</li>
+          <li>The AI learns from your patterns</li>
+          <li>Rephrase if first attempt doesn't work</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="activity-map">
+      <h3>📋 Activity-to-Location Mapping</h3>
+      <p>Here's what activities the AI recognizes:</p>
+      <table class="data-table" style="margin-top: var(--spacing-md);">
+        <thead>
+          <tr>
+            <th>🎯 Activity</th>
+            <th>📍 Location</th>
+            <th>💬 Example Commands</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Cooking, Preparing food</td>
+            <td>Kitchen</td>
+            <td>"I want to cook", "Let's make dinner"</td>
+          </tr>
+          <tr>
+            <td>Eating, Dining</td>
+            <td>Dining Room / Kitchen</td>
+            <td>"I'm hungry", "Let's eat", "Breakfast time"</td>
+          </tr>
+          <tr>
+            <td>Sleeping, Resting</td>
+            <td>Bedroom</td>
+            <td>"I want to sleep", "I need rest", "Goodnight"</td>
+          </tr>
+          <tr>
+            <td>Working, Studying</td>
+            <td>Office</td>
+            <td>"I need to work", "Let's study", "Show me the office"</td>
+          </tr>
+          <tr>
+            <td>Showering, Bathing</td>
+            <td>Bathroom</td>
+            <td>"I need a shower", "Time to bathe", "Bathroom"</td>
+          </tr>
+          <tr>
+            <td>Relaxing, TV Time</td>
+            <td>Living Room</td>
+            <td>"I want to relax", "Show me the TV", "Let's sit"</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════
+       SECTION 4: ASSET MANAGEMENT
+       ══════════════════════════════════════════ -->
+  <section class="card space-lg">
+    <h2>📦 Asset & Inventory Management</h2>
+
+    <div class="tips-grid">
+      <div class="tip-card">
+        <div class="tip-icon">📍</div>
+        <h3>Two Types of Assets</h3>
+        <p><strong>Navigation Locations:</strong> Marked sweeps for voice navigation</p>
+        <p style="margin-top: 1rem;"><strong>Scanned Assets:</strong> Inventory items discovered by the AI</p>
+      </div>
+
+      <div class="tip-card">
+        <div class="tip-icon">🔍</div>
+        <h3>View Your Assets</h3>
+        <ol>
+          <li>Click "Manage Assets" from any space</li>
+          <li>Section 1: All your marked locations</li>
+          <li>Section 2: Scanned inventory by location</li>
+          <li>Edit or delete as needed</li>
+        </ol>
+      </div>
+
+      <div class="tip-card">
+        <div class="tip-icon">🔗</div>
+        <h3>Using Sweep UUIDs</h3>
+        <p>Sweep UUID is the unique ID for each location:</p>
+        <ul>
+          <li>Shown in Location Tracker (top-left of viewer)</li>
+          <li>Used for precise navigation</li>
+          <li>Copy from tracker and paste when adding manually</li>
+        </ul>
+      </div>
+
+      <div class="tip-card">
+        <div class="tip-icon">🏷️</div>
+        <h3>Categories & Organization</h3>
+        <p><strong>Use categories to organize:</strong></p>
+        <ul>
+          <li>Room, Bathroom, Kitchen, Bedroom</li>
+          <li>Living Space, Office, Outdoor</li>
+          <li>Create your own custom categories</li>
+          <li>Helps with large spaces</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="workflow-guide">
+      <h3>📊 Typical Asset Management Workflow</h3>
+      <div style="background: rgba(16,163,127,0.04); padding: 1.5rem; border-radius: var(--radius-md); border-left: 3px solid var(--accent-primary);">
+        <ol style="margin: 0;">
+          <li><strong>Mark Locations:</strong> Say "Mark this as Kitchen" in 5-6 key rooms</li>
+          <li><strong>Navigate:</strong> Use activity-based commands like "I'm hungry"</li>
+          <li><strong>Review:</strong> Check "Manage Assets" to see all marked locations</li>
+          <li><strong>Organize:</strong> Add descriptions and categories for clarity</li>
+          <li><strong>Maintain:</strong> Update or delete outdated marks as needed</li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════
+       SECTION 5: VIEWER CONTROLS & SHORTCUTS
+       ══════════════════════════════════════════ -->
+  <section class="card space-lg">
+    <h2>⌨️ Viewer Controls & Navigation</h2>
+
+    <div class="tips-grid">
+      <div class="tip-card">
+        <div class="tip-icon">🖱️</div>
+        <h3>Mouse Controls</h3>
+        <ul>
+          <li><strong>Look Around:</strong> Move mouse to rotate view</li>
+          <li><strong>Move Forward:</strong> Click to move to a location</li>
+          <li><strong>Zoom:</strong> Scroll wheel to zoom in/out</li>
+        </ul>
+      </div>
+
+      <div class="tip-card">
+        <div class="tip-icon">📱</div>
+        <h3>Mobile Controls</h3>
+        <ul>
+          <li><strong>Look Around:</strong> Drag to rotate</li>
+          <li><strong>Move:</strong> Tap on destination</li>
+          <li><strong>Zoom:</strong> Pinch to zoom</li>
+          <li><strong>Panels:</strong> Adapt to screen size</li>
+        </ul>
+      </div>
+
+      <div class="tip-card">
+        <div class="tip-icon">🎨</div>
+        <h3>Panel Management</h3>
+        <ul>
+          <li>Click "−" to minimize any panel</li>
+          <li>Click "+" to expand minimized panels</li>
+          <li>Settings persist after refresh</li>
+          <li>Mobile: Panels stack vertically</li>
+        </ul>
+      </div>
+
+      <div class="tip-card">
+        <div class="tip-icon">📍</div>
+        <h3>Location Tracker Panel</h3>
+        <ul>
+          <li>Shows current Sweep UUID</li>
+          <li>Updates as you move</li>
+          <li>Copy UUID for manual marking</li>
+          <li>Reference for navigation</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════
+       SECTION 6: PRO TIPS & BEST PRACTICES
+       ══════════════════════════════════════════ -->
+  <section class="card space-lg">
+    <h2>⭐ Pro Tips & Best Practices</h2>
+
+    <div class="pro-tips">
+      <div class="pro-tip">
+        <span class="pro-icon">✨</span>
+        <div>
+          <h4>Tip 1: Mark Locations Systematically</h4>
+          <p>Go room-by-room and mark each location. Start with 3-4 main areas (Kitchen, Bedroom, Office, Living Room) for best results.</p>
+        </div>
+      </div>
+
+      <div class="pro-tip">
+        <span class="pro-icon">🎯</span>
+        <div>
+          <h4>Tip 2: Use Activity Commands First</h4>
+          <p>Instead of "Take me to kitchen", say "I'm hungry". Activity-based navigation is more intuitive and helps the AI understand context.</p>
+        </div>
+      </div>
+
+      <div class="pro-tip">
+        <span class="pro-icon">📝</span>
+        <div>
+          <h4>Tip 3: Add Descriptions for Clarity</h4>
+          <p>For spaces with multiple similar rooms, add descriptions like "Master Bedroom with Ensuite" vs just "Bedroom". Helps you and the AI understand better.</p>
+        </div>
+      </div>
+
+      <div class="pro-tip">
+        <span class="pro-icon">🔄</span>
+        <div>
+          <h4>Tip 4: Review Regularly</h4>
+          <p>Check your "Manage Assets" page weekly. Update outdated marks and remove duplicates to keep everything organized.</p>
+        </div>
+      </div>
+
+      <div class="pro-tip">
+        <span class="pro-icon">💬</span>
+        <div>
+          <h4>Tip 5: Use Natural Language</h4>
+          <p>The AI understands conversational commands. Say "I'm tired" instead of "Go to bedroom", or "What's here?" instead of "List items".</p>
+        </div>
+      </div>
+
+      <div class="pro-tip">
+        <span class="pro-icon">🏷️</span>
+        <div>
+          <h4>Tip 6: Consistency is Key</h4>
+          <p>Always use the same names for locations. "Kitchen" not "kitch" or "cook area". Consistency helps the AI recognize and navigate accurately.</p>
+        </div>
+      </div>
+
+      <div class="pro-tip">
+        <span class="pro-icon">🌍</span>
+        <div>
+          <h4>Tip 7: Organize by Categories</h4>
+          <p>Use categories to group similar locations. Mark multiple bathrooms with category "Bathroom" for easy organization.</p>
+        </div>
+      </div>
+
+      <div class="pro-tip">
+        <span class="pro-icon">⚡</span>
+        <div>
+          <h4>Tip 8: Minimize Unused Panels</h4>
+          <p>While exploring, minimize panels you don't need. This gives more screen space to the 3D viewer and makes navigation smoother.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════
+       SECTION 7: TROUBLESHOOTING
+       ══════════════════════════════════════════ -->
+  <section class="card space-lg">
+    <h2>🔧 Troubleshooting & FAQ</h2>
+
+    <div class="faq-section">
+      <details class="faq-item" open>
+        <summary><strong>❓ AI won't navigate to a location I marked</strong></summary>
+        <div class="faq-answer">
+          <p><strong>Solution:</strong></p>
+          <ul>
+            <li>Check that the location has been marked (go to "Manage Assets")</li>
+            <li>Use the exact location name when asking ("Kitchen" not "kitch")</li>
+            <li>Try an activity command instead: "I'm hungry" instead of "Go to kitchen"</li>
+            <li>Refresh the page and try again</li>
+          </ul>
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary><strong>❓ Location Tracker shows no Sweep UUID</strong></summary>
+        <div class="faq-answer">
+          <p><strong>Solution:</strong></p>
+          <ul>
+            <li>Make sure you're inside the 3D viewer</li>
+            <li>Give the page a moment to load</li>
+            <li>Refresh the page</li>
+            <li>Try a different browser</li>
+            <li>Check browser console (F12) for errors</li>
+          </ul>
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary><strong>❓ 3D space won't load</strong></summary>
+        <div class="faq-answer">
+          <p><strong>Solution:</strong></p>
+          <ul>
+            <li>Check your internet connection</li>
+            <li>Verify the Matterport Space ID is correct</li>
+            <li>Try a different browser (Chrome, Firefox, Safari, Edge)</li>
+            <li>Clear browser cache: <code>Ctrl+Shift+Del</code></li>
+            <li>Ensure WebGL is enabled in your browser</li>
+          </ul>
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary><strong>❓ Chat panel not responding</strong></summary>
+        <div class="faq-answer">
+          <p><strong>Solution:</strong></p>
+          <ul>
+            <li>Check internet connection</li>
+            <li>Refresh the page</li>
+            <li>Try a shorter, simpler message first</li>
+            <li>Wait a moment for server response</li>
+            <li>Sign out and back in</li>
+          </ul>
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary><strong>❓ Panels are overlapping on my screen</strong></summary>
+        <div class="faq-answer">
+          <p><strong>Solution:</strong></p>
+          <ul>
+            <li>Use minimize buttons to hide panels you're not using</li>
+            <li>On mobile, try rotating your device</li>
+            <li>Panels automatically adjust on smaller screens</li>
+            <li>Try browser zoom: <code>Ctrl+0</code> to reset</li>
+          </ul>
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary><strong>❓ Can't mark a location</strong></summary>
+        <div class="faq-answer">
+          <p><strong>Solution:</strong></p>
+          <ul>
+            <li>Make sure you enter a location name in the form</li>
+            <li>Try using the Asset Management page instead</li>
+            <li>Ensure the space is fully loaded</li>
+            <li>Refresh and try again</li>
+          </ul>
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary><strong>❓ How many locations can I mark?</strong></summary>
+        <div class="faq-answer">
+          <p><strong>Answer:</strong> Unlimited! Mark as many locations as you need. There's no practical limit to how many places you can tag.</p>
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary><strong>❓ Do you work on mobile?</strong></summary>
+        <div class="faq-answer">
+          <p><strong>Answer:</strong> Yes! 3DAgent works on tablets and phones. The layout adapts automatically:</p>
+          <ul>
+            <li>✅ iPhone, iPad (iOS)</li>
+            <li>✅ Android phones and tablets</li>
+            <li>✅ Landscape and portrait modes</li>
+          </ul>
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary><strong>❓ Can I download the 3D space?</strong></summary>
+        <div class="faq-answer">
+          <p><strong>Answer:</strong> No, spaces are streamed directly from Matterport. You can't download them, but you can explore and organize them anytime you're logged in.</p>
+        </div>
+      </details>
+
+      <details class="faq-item">
+        <summary><strong>❓ Can I share spaces with other users?</strong></summary>
+        <div class="faq-answer">
+          <p><strong>Answer:</strong> Currently, spaces are private to your account. Sharing features may be added in future updates!</p>
+        </div>
+      </details>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════
+       SECTION 8: QUICK REFERENCE
+       ══════════════════════════════════════════ -->
+  <section class="card space-lg">
+    <h2>📋 Quick Reference Guide</h2>
+
+    <div class="quick-ref">
+      <div class="ref-column">
+        <h3>🎯 Quick Commands</h3>
+        <code-list>
+          <li>"Mark this as Kitchen"</li>
+          <li>"Go to the bedroom"</li>
+          <li>"I'm hungry"</li>
+          <li>"I want to work"</li>
+          <li>"I need a shower"</li>
+          <li>"What's here?"</li>
+        </code-list>
+      </div>
+
+      <div class="ref-column">
+        <h3>📍 Keyboard Shortcuts</h3>
+        <code-list>
+          <li><strong>Enter</strong> - Send chat message</li>
+          <li><strong>F12</strong> - Open developer tools</li>
+          <li><strong>Ctrl+0</strong> - Reset zoom level</li>
+          <li><strong>Ctrl+Shift+Del</strong> - Clear cache</li>
+        </code-list>
+      </div>
+
+      <div class="ref-column">
+        <h3>🔗 Quick Links</h3>
+        <code-list>
+          <li><a href="{{ url_for('main.dashboard') }}">← Dashboard</a></li>
+          <li><a href="{{ url_for('main.new_space') }}">➕ New Space</a></li>
+          <li><a href="{{ url_for('auth.logout') }}">🚪 Logout</a></li>
+        </code-list>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════
+       SECTION 9: WHAT'S NEXT?
+       ══════════════════════════════════════════ -->
+  <section class="card space-lg">
+    <h2>🎓 Next Steps</h2>
+
+    <div class="next-steps">
+      <div class="step">
+        <span class="step-num">1</span>
+        <div>
+          <h4>Create Your First Space</h4>
+          <p>Head to the dashboard and add a Matterport Space ID to start exploring.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <span class="step-num">2</span>
+        <div>
+          <h4>Mark 5 Key Locations</h4>
+          <p>Mark your kitchen, bedroom, office, living room, and bathroom. This unlocks most features.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <span class="step-num">3</span>
+        <div>
+          <h4>Try Activity Commands</h4>
+          <p>Say "I'm hungry" instead of "Go to kitchen". Get used to activity-based navigation.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <span class="step-num">4</span>
+        <div>
+          <h4>Organize Your Assets</h4>
+          <p>Visit "Manage Assets" to review, edit, and organize all your marked locations.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <span class="step-num">5</span>
+        <div>
+          <h4>Explore & Experiment</h4>
+          <p>Try different commands, ask the AI questions, and discover new ways to navigate.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════
+       CONTACT & SUPPORT
+       ══════════════════════════════════════════ -->
+  <section class="card space-lg" style="background: rgba(16,163,127,0.04); border: 1px solid rgba(16,163,127,0.2);">
+    <h2>💬 Need More Help?</h2>
+    <p>If you have questions not covered here:</p>
+    <ul>
+      <li>📧 Check the dashboard for contact information</li>
+      <li>🐛 Report issues with specific steps to reproduce</li>
+      <li>💡 Share feature suggestions and feedback</li>
+      <li>📖 Review the complete <a href="{{ url_for('main.dashboard') }}">documentation</a></li>
+    </ul>
+    <p style="margin-top: 1rem; font-size: 0.9rem; color: var(--text-secondary);">
+      <strong>Version 2.0</strong> | Last Updated: April 2026 | 
+      <a href="{{ url_for('main.dashboard') }}">← Back to Dashboard</a>
+    </p>
+  </section>
+
+</div>
+
+<style>
+  /* Tips Grid */
+  .tips-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: var(--spacing-lg);
+    margin: var(--spacing-lg) 0;
+  }
+
+  .tip-card {
+    padding: var(--spacing-lg);
+    background: rgba(16, 163, 127, 0.04);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    transition: all 0.2s ease;
+  }
+
+  .tip-card:hover {
+    border-color: var(--accent-primary);
+    background: rgba(16, 163, 127, 0.08);
+    transform: translateY(-2px);
+  }
+
+  .tip-icon {
+    font-size: 2rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .tip-card h3 {
+    margin: 0.5rem 0 0.75rem;
+    font-size: 1.1rem;
+  }
+
+  .tip-card p {
+    margin: 0.5rem 0;
+    font-size: 0.95rem;
+  }
+
+  .tip-card ul, .tip-card ol {
+    margin: 0.5rem 0;
+    padding-left: 1.5rem;
+  }
+
+  .tip-card li {
+    margin: 0.25rem 0;
+  }
+
+  .tip-code {
+    display: block;
+    background: rgba(0, 0, 0, 0.2);
+    padding: 0.5rem;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    margin-top: 0.5rem;
+  }
+
+  /* Highlight Box */
+  .highlight-box {
+    background: linear-gradient(135deg, rgba(16,163,127,0.1), rgba(99,102,241,0.1));
+    padding: var(--spacing-lg);
+    border-left: 4px solid var(--accent-primary);
+    border-radius: var(--radius-md);
+    margin: var(--spacing-lg) 0;
+  }
+
+  /* Naming Guide */
+  .naming-guide {
+    margin-top: var(--spacing-lg);
+    padding: var(--spacing-lg);
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: var(--radius-md);
+  }
+
+  /* Activity Map */
+  .activity-map {
+    margin-top: var(--spacing-lg);
+    padding: var(--spacing-lg);
+    background: rgba(16,163,127,0.04);
+    border-radius: var(--radius-md);
+  }
+
+  /* Pro Tips */
+  .pro-tips {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-md);
+    margin: var(--spacing-lg) 0;
+  }
+
+  .pro-tip {
+    display: flex;
+    gap: var(--spacing-md);
+    padding: var(--spacing-md);
+    background: rgba(99, 102, 241, 0.04);
+    border-left: 3px solid var(--accent-secondary);
+    border-radius: var(--radius-sm);
+  }
+
+  .pro-icon {
+    font-size: 1.5rem;
+    flex-shrink: 0;
+  }
+
+  .pro-tip h4 {
+    margin: 0 0 0.5rem 0;
+    color: var(--accent-secondary);
+  }
+
+  .pro-tip p {
+    margin: 0;
+  }
+
+  /* FAQ Section */
+  .faq-section {
+    margin: var(--spacing-lg) 0;
+  }
+
+  .faq-item {
+    margin-bottom: var(--spacing-md);
+    padding: var(--spacing-md);
+    background: rgba(0, 0, 0, 0.1);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+  }
+
+  .faq-item summary {
+    font-weight: 500;
+    padding: 0.5rem;
+    outline: none;
+  }
+
+  .faq-item summary:hover {
+    color: var(--accent-primary);
+  }
+
+  .faq-answer {
+    margin-top: var(--spacing-md);
+    padding: var(--spacing-md);
+    background: rgba(16, 163, 127, 0.04);
+    border-radius: var(--radius-sm);
+  }
+
+  /* Quick Reference */
+  .quick-ref {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: var(--spacing-lg);
+    margin: var(--spacing-lg) 0;
+  }
+
+  .ref-column h3 {
+    margin-top: 0;
+    color: var(--accent-primary);
+  }
+
+  code-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  code-list li {
+    padding: 0.5rem;
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 4px;
+    font-size: 0.9rem;
+    font-family: monospace;
+  }
+
+  /* Next Steps */
+  .next-steps {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-md);
+    margin: var(--spacing-lg) 0;
+  }
+
+  .step {
+    display: flex;
+    gap: var(--spacing-md);
+    padding: var(--spacing-md);
+    background: rgba(99, 102, 241, 0.04);
+    border-radius: var(--radius-sm);
+  }
+
+  .step-num {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    background: var(--accent-secondary);
+    color: white;
+    font-weight: bold;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .step h4 {
+    margin: 0 0 0.25rem 0;
+  }
+
+  .step p {
+    margin: 0;
+    font-size: 0.95rem;
+  }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    .tips-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .quick-ref {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+
+{% endblock %}

@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Add Space · 3DAgent{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div class="page-title">
+    <h1>Add New Space</h1>
+    <p>Connect your Matterport space to 3DAgent and start navigating</p>
+  </div>
+</div>
+
+<div class="page-main">
+  <section class="card narrow" style="margin-top: var(--spacing-lg);">
+    <form method="post" class="stack-form">
+      <label>
+        <span>Matterport Space ID (SID)</span>
+        <input name="matterport_sid" required placeholder="Found in your Matterport URL: my.matterport.com/show/?m=SID" type="text">
+        <small class="text-muted" style="font-size: 0.8rem; margin-top: 0.25rem; display: block;">Look for the 'SID' parameter in your Matterport URL</small>
+      </label>
+      
+      <label>
+        <span>Display Name</span>
+        <input name="map_name" placeholder="e.g., My Office, Kitchen Demo, Showroom" type="text">
+      </label>
+      
+      <div style="display: flex; gap: var(--spacing-md); margin-top: var(--spacing-lg);">
+        <button type="submit" class="btn btn-primary btn-large" style="flex: 1;">Create Space</button>
+        <a href="{{ url_for('main.dashboard') }}" class="btn btn-ghost btn-large" style="flex: 1; text-align: center;">Cancel</a>
+      </div>
+    </form>
+  </section>
+</div>
+{% endblock %}

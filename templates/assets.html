@@ -1,0 +1,206 @@
+﻿{% extends "base.html" %}
+{% block title %}Assets · {{ space.map_name }} · 3DAgent{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <div class="page-title">
+    <h1>📍 Space Management</h1>
+    <p>Tagged locations and scanned inventory for <strong>{{ space.map_name }}</strong>.</p>
+  </div>
+  <div class="page-header-actions">
+    <a href="{{ url_for('main.viewer', map_id=space.map_id) }}" class="btn secondary">👁️ Open Viewer</a>
+    <a href="{{ url_for('main.dashboard') }}" class="btn ghost">← Dashboard</a>
+  </div>
+</div>
+
+<div class="page-main">
+
+  <!-- ══════════════════════════════════════════
+       SECTION 1: NAVIGATION LOCATIONS
+       Tagged sweeps used for voice navigation
+  ══════════════════════════════════════════ -->
+  <div class="card space-lg">
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:var(--spacing-md); margin-bottom:var(--spacing-lg);">
+      <div>
+        <h2 style="margin:0;">📌 Navigation Locations</h2>
+        <p class="text-secondary" style="margin:0.25rem 0 0;">
+          Sweep-linked labels used by the AI for voice navigation commands like <em>"go to kitchen"</em>.
+        </p>
+      </div>
+    </div>
+
+    <!-- Add Location Form -->
+    <form method="post" class="asset-form">
+      <label>
+        <span>Location Name</span>
+        <input name="label_name" required placeholder="e.g., Kitchen, Bedroom 1" type="text">
+      </label>
+      <label>
+        <span>Sweep UUID</span>
+        <input name="sweep_uuid" required placeholder="From the Viewer HUD top-left" type="text">
+      </label>
+      <label>
+        <span>Category</span>
+        <input name="category" placeholder="e.g., room, bathroom" type="text">
+      </label>
+      <label>
+        <span>Description</span>
+        <input name="description" placeholder="Optional notes" type="text">
+      </label>
+      <button type="submit" class="btn primary">✓ Add Location</button>
+    </form>
+
+    {% if assets %}
+      <table class="data-table" style="margin-top: var(--spacing-lg);">
+        <thead>
+          <tr>
+            <th>Location Name</th>
+            <th>Category</th>
+            <th>Sweep UUID</th>
+            <th>Description</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in assets %}
+          <tr>
+            <td><strong>{{ a.label_name }}</strong></td>
+            <td><span class="category-badge">{{ a.category or 'Uncategorized' }}</span></td>
+            <td><code title="{{ a.sweep_uuid }}">{{ a.sweep_uuid[:14] }}…</code></td>
+            <td class="text-secondary">{{ a.description or '—' }}</td>
+            <td>
+              <div class="actions">
+                <a href="{{ url_for('main.edit_asset', map_id=space.map_id, asset_id=a.asset_id) }}"
+                   class="btn small secondary">✏️ Edit</a>
+                <form method="post"
+                      action="{{ url_for('main.delete_asset', map_id=space.map_id, asset_id=a.asset_id) }}"
+                      style="display:inline;"
+                      onsubmit="return confirm('Delete \'{{ a.label_name }}\'?');">
+                  <button type="submit" class="btn small danger">🗑️</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p class="text-secondary" style="margin-top:var(--spacing-md); font-size:0.85rem;">
+        {{ assets|length }} location{{ 's' if assets|length != 1 else '' }} tagged.
+        💡 Tip: You can also say <em>"mark this as Kitchen"</em> in the Viewer chat.
+      </p>
+    {% else %}
+      <div style="text-align:center; padding:2rem; background:rgba(16,163,127,0.04);
+                  border-radius:var(--radius-md); border:1px dashed var(--border-hover);
+                  margin-top:var(--spacing-lg);">
+        <p style="font-size:2rem; margin:0;">🏷️</p>
+        <p class="text-secondary" style="margin-top:0.75rem;">
+          No locations tagged yet. Fill the form above or say <em>"mark this as Kitchen"</em> in the Viewer.
+        </p>
+      </div>
+    {% endif %}
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       SECTION 2: SCANNED ASSET INVENTORY
+       Objects detected by the 360° scanner
+  ══════════════════════════════════════════ -->
+  <div class="card space-lg">
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:var(--spacing-md); margin-bottom:var(--spacing-lg);">
+      <div>
+        <h2 style="margin:0;">🔍 Scanned Asset Inventory</h2>
+        <p class="text-secondary" style="margin:0.25rem 0 0;">
+          Objects auto-detected by the 360° scanner. These are separate from navigation locations.
+        </p>
+      </div>
+      {% if asset_summaries %}
+      <div style="min-width:220px;">
+        <label>
+          <span>Filter by Room</span>
+          <select id="summary-location-filter">
+            <option value="">All rooms</option>
+            {% for loc in summary_locations %}
+              <option value="{{ loc }}">{{ loc }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+      {% endif %}
+    </div>
+
+    {% if asset_summaries %}
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>🏠 Room</th>
+            <th>Detected Object</th>
+            <th style="text-align:center;">Count</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="summary-table-body">
+          {% for row in asset_summaries %}
+            {% set loc = row.area_name or "Unspecified" %}
+            <tr class="summary-row" data-location="{{ loc }}">
+              <td><span class="location-badge">{{ loc }}</span></td>
+              <td style="text-transform:capitalize;">{{ row.asset_name }}</td>
+              <td style="text-align:center;"><span class="count-badge">{{ row.count }}</span></td>
+              <td>
+                <div class="actions">
+                  <a href="{{ url_for('main.edit_scanned_asset', map_id=space.map_id, summary_id=row.id) }}"
+                     class="btn small secondary">✏️ Edit</a>
+                  <form method="post"
+                        action="{{ url_for('main.delete_scanned_asset', map_id=space.map_id, summary_id=row.id) }}"
+                        style="display:inline;"
+                        onsubmit="return confirm('Delete this scanned asset?');">
+                    <button type="submit" class="btn small danger">🗑️</button>
+                  </form>
+                </div>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p id="summary-empty-tip" class="text-secondary"
+         style="margin-top:var(--spacing-sm); display:none;">
+        No scanned assets found for this room.
+      </p>
+    {% else %}
+      <div style="text-align:center; padding:2rem; background:rgba(99,102,241,0.04);
+                  border-radius:var(--radius-md); border:1px dashed var(--border-hover);">
+        <p style="font-size:2rem; margin:0;">🔍</p>
+        <p class="text-secondary" style="margin-top:0.75rem;">
+          No scanned assets yet. Open the Viewer, navigate to a room, and click
+          <strong>Scan Area</strong> to auto-detect objects.
+        </p>
+        <a href="{{ url_for('main.viewer', map_id=space.map_id) }}"
+           class="btn secondary" style="margin-top:var(--spacing-md);">
+          👁️ Open Viewer to Scan
+        </a>
+      </div>
+    {% endif %}
+  </div>
+
+</div>
+
+{% if asset_summaries %}
+<script>
+(function () {
+  var filter   = document.getElementById("summary-location-filter");
+  var rows     = Array.from(document.querySelectorAll(".summary-row"));
+  var emptyTip = document.getElementById("summary-empty-tip");
+  function apply() {
+    var sel = (filter && filter.value) || "";
+    var visible = 0;
+    rows.forEach(function (row) {
+      var show = !sel || row.getAttribute("data-location") === sel;
+      row.style.display = show ? "" : "none";
+      if (show) visible++;
+    });
+    if (emptyTip) emptyTip.style.display = (sel && visible === 0) ? "block" : "none";
+  }
+  if (filter) { filter.addEventListener("change", apply); apply(); }
+})();
+</script>
+{% endif %}
+
+{% endblock %}

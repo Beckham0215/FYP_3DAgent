@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block title %}{{ space.map_name }} · Viewer · 3DAgent{% endblock %}
+{% block body_class %}viewer-shell{% endblock %}
+{% block content %}
+<div class="viewer-root">
+  <iframe
+    id="matterport-iframe"
+    class="matterport-frame"
+    allow="xr-spatial-tracking"
+    title="Matterport 3D viewer"
+  ></iframe>
+
+  <!-- Location Tracker Panel -->
+  <div id="uuid-tracker" class="hud-panel">
+    <div class="panel-header">
+      <strong>📍 Current Location</strong>
+      <button type="button" class="toggle-btn" title="Minimize panel">−</button>
+    </div>
+    <div class="panel-body">
+      <span id="sweep-display" style="word-break: break-all; font-size: 0.85rem;">Detecting location...</span>
+    </div>
+  </div>
+
+  <!-- Quick Asset Tagging Panel -->
+  <div id="quick-asset-manager" class="hud-panel">
+    <div class="panel-header">
+      <strong>🏷️ Quick Tag</strong>
+      <button type="button" class="toggle-btn" title="Minimize panel">−</button>
+    </div>
+    <div class="panel-body">
+      <form id="quick-asset-form">
+        <input 
+          type="text" 
+          id="quick-asset-name" 
+          placeholder="Location name (e.g., Kitchen)" 
+          required 
+          autocomplete="off"
+        >
+        <input 
+          type="text" 
+          id="quick-asset-category" 
+          placeholder="Category (e.g., Room)" 
+          autocomplete="off"
+        >
+        <button type="submit" id="quick-asset-btn" class="btn primary">✓ Save Location</button>
+      </form>
+      <div id="quick-asset-status" style="margin-top: 0.5rem;"></div>
+    </div>
+  </div>
+
+  <!-- AI Assistant Chat Panel -->
+  <aside class="chat-overlay" id="chat-panel">
+    <header class="chat-header panel-header">
+      <div style="flex: 1; display: flex; align-items: center; gap: 8px;">
+        <h2 style="margin: 0; font-size: 0.95rem; font-weight: 700;">3DAgent</h2>
+        <span class="muted small" style="font-size: 0.75rem;">AI Assistant</span>
+      </div>
+      
+      <!-- Robot Sticker Hero -->
+      <div class="robot-sticker">
+        <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <!-- Head -->
+          <rect x="12" y="8" width="24" height="22" rx="2" fill="url(#gradientRobot)" stroke="rgba(255,255,255,0.3)" stroke-width="1.5"/>
+          <!-- Eyes -->
+          <circle cx="18" cy="14" r="2.5" fill="#fff" filter="url(#glowRobot)"/>
+          <circle cx="30" cy="14" r="2.5" fill="#fff" filter="url(#glowRobot)"/>
+          <!-- Mouth -->
+          <path d="M 18 20 Q 24 22 30 20" stroke="#10a37f" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+          <!-- Body -->
+          <rect x="14" y="30" width="20" height="12" rx="1" fill="rgba(16, 163, 127, 0.2)" stroke="rgba(255,255,255,0.2)" stroke-width="1"/>
+          <!-- Antenna -->
+          <circle cx="24" cy="6" r="1.5" fill="#10a37f" filter="url(#glowRobot)"/>
+          <line x1="24" y1="6" x2="24" y2="1" stroke="#10a37f" stroke-width="1" stroke-linecap="round" filter="url(#glowRobot)"/>
+          
+          <defs>
+            <linearGradient id="gradientRobot" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" style="stop-color:#10a37f;stop-opacity:0.4" />
+              <stop offset="100%" style="stop-color:#6366f1;stop-opacity:0.2" />
+            </linearGradient>
+            <filter id="glowRobot">
+              <feGaussianBlur stdDeviation="1.5" result="coloredBlur"/>
+              <feMerge>
+                <feMergeNode in="coloredBlur"/>
+                <feMergeNode in="SourceGraphic"/>
+              </feMerge>
+            </filter>
+          </defs>
+        </svg>
+      </div>
+      
+      <button type="button" class="toggle-btn" title="Minimize panel" aria-label="Minimize chat panel">−</button>
+    </header>
+    
+    <div class="panel-body chat-body" style="display: flex; flex-direction: column; flex: 1; overflow-y: auto;">
+      <div id="sdk-status" class="sdk-status">
+        <span style="color: var(--text-muted); font-size: 0.8rem;">🔄 Connecting...</span>
+      </div>
+      
+      <div id="scan-review-panel" class="scan-review-panel" style="display: none;">
+        <div class="scan-review-title">Scan Results (Current Sweep)</div>
+        <div class="scan-review-instructions">✓ Check items to add to this location:</div>
+        <div id="scan-review-list" class="scan-review-list"></div>
+        <select id="scan-location-select">
+          <option value="">Select existing location...</option>
+        </select>
+        <input
+          type="text"
+          id="scan-area-name-input"
+          placeholder="Or enter new location (e.g., Living Room)"
+          autocomplete="off"
+        >
+        <div class="scan-review-actions">
+          <button type="button" id="scan-save-btn" class="btn success small">Add to assets</button>
+          <button type="button" id="scan-cancel-btn" class="btn ghost small">Cancel</button>
+        </div>
+      </div>
+
+      <div id="chat-log" class="chat-log" role="log" aria-live="polite" aria-label="Chat messages"></div>
+      
+      <form id="chat-form" class="chat-form">
+        <input 
+          type="text" 
+          id="chat-input" 
+          placeholder="Ask me to navigate..." 
+          autocomplete="off"
+          aria-label="Chat input"
+        >
+        <button 
+          type="button" 
+          id="voice-btn" 
+          class="btn voice-btn" 
+          title="Start voice input"
+          aria-label="Voice input button"
+        >🎤</button>
+        <button
+          type="button"
+          id="scan-area-btn"
+          class="btn secondary"
+          title="Scan nearby sweeps for assets"
+          style="padding: 0.5rem 0.65rem; font-size: 0.8rem;"
+        >Scan Area</button>
+        <button type="submit" class="btn primary" title="Send message" style="padding: 0.5rem 0.65rem; font-size: 0.8rem;">Send</button>
+      </form>
+
+      <footer class="chat-footer">
+        <a href="{{ url_for('main.manage_assets', map_id=space.map_id) }}" title="Manage locations">📍 Assets</a>
+        <a href="{{ url_for('main.dashboard') }}" title="Dashboard">← Dashboard</a>
+      </footer>
+    </div>
+  </aside>
+</div>
+
+<script>
+  /* @ts-nocheck */
+  window.__3DAGENT__ = {
+    mapId: {{ space.map_id }},
+    spaceId: {{ space.matterport_sid | tojson }},
+    sdkKey: {{ matterport_sdk_key | tojson }}
+  };
+</script>
+<script src="{{ url_for('static', filename='js/panel-controls.js') }}"></script>
+<script src="{{ url_for('static', filename='js/viewer.js') }}"></script>
+{% endblock %}

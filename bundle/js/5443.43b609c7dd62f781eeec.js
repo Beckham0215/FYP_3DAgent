@@ -1,0 +1,2 @@
+/*! For license information please see 5443.43b609c7dd62f781eeec.js.LICENSE.txt */
+"use strict";(self.webpackChunkmp_webgl=self.webpackChunkmp_webgl||[]).push([[5443],{45443:(e,s,p)=>{e.exports=p.p+"images/logo-white.svg"}}]);

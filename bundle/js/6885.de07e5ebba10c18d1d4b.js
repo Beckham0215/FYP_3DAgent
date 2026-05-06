@@ -1,0 +1,2 @@
+/*! For license information please see 6885.de07e5ebba10c18d1d4b.js.LICENSE.txt */
+"use strict";(self.webpackChunkmp_webgl=self.webpackChunkmp_webgl||[]).push([[6885],{46885:(e,s,p)=>{e.exports=p.p+"images/logo-black.svg"}}]);

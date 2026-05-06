@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Edit Scanned Asset · {{ space.map_name }} · 3DAgent{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div class="page-title">
+    <h1>Edit Scanned Asset</h1>
+    <p>{{ space.map_name }}</p>
+  </div>
+  <div class="page-header-actions">
+    <a href="{{ url_for('main.manage_assets', map_id=space.map_id) }}" class="btn btn-ghost">← Back</a>
+  </div>
+</div>
+
+<div class="page-main">
+  <section class="card narrow">
+    <h2 style="margin-top: 0;">Update Scanned Asset Row</h2>
+
+    <form method="post" class="stack-form">
+      <label>
+        <span>Location</span>
+        <input name="area_name" value="{{ row.area_name or '' }}" placeholder="e.g., Living Room" type="text">
+      </label>
+
+      <label>
+        <span>Asset Name</span>
+        <input name="asset_name" required value="{{ row.asset_name }}" placeholder="e.g., tv" type="text">
+      </label>
+
+      <label>
+        <span>Count</span>
+        <input name="count" required min="0" value="{{ row.count }}" type="number">
+      </label>
+
+      <div style="display: flex; gap: var(--spacing-md); margin-top: var(--spacing-lg);">
+        <button type="submit" class="btn btn-primary btn-large" style="flex: 1;">✓ Save Changes</button>
+        <a href="{{ url_for('main.manage_assets', map_id=space.map_id) }}" class="btn btn-ghost btn-large" style="flex: 1; text-align: center;">Cancel</a>
+      </div>
+    </form>
+  </section>
+</div>
+{% endblock %}

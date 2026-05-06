@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Register · 3DAgent{% endblock %}
+{% block content %}
+<div class="login-container">
+  <!-- Brand Mark Section -->
+  <div class="brand-mark" style="margin-bottom: 3rem;">
+    <div class="brand-left">
+      <svg width="36" height="36" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <text x="50" y="60" font-size="80" font-weight="bold" text-anchor="middle" fill="url(#matterportGradient)">M</text>
+        <defs>
+          <linearGradient id="matterportGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" style="stop-color:#10a37f;stop-opacity:1" />
+            <stop offset="100%" style="stop-color:#34d399;stop-opacity:1" />
+          </linearGradient>
+        </defs>
+      </svg>
+      <span>Matterport</span>
+    </div>
+    
+    <div class="brand-connector">+</div>
+    
+    <div class="brand-right">
+      <svg width="36" height="36" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="12" y="8" width="24" height="22" rx="2" fill="url(#robotGradient)" stroke="rgba(255,255,255,0.3)" stroke-width="1"/>
+        <circle cx="18" cy="14" r="2" fill="#fff"/>
+        <circle cx="30" cy="14" r="2" fill="#fff"/>
+        <path d="M 18 20 Q 24 22 30 20" stroke="#10a37f" stroke-width="1" fill="none" stroke-linecap="round"/>
+        <rect x="14" y="30" width="20" height="8" rx="1" fill="rgba(16, 163, 127, 0.2)" stroke="rgba(255,255,255,0.2)" stroke-width="1"/>
+        <defs>
+          <linearGradient id="robotGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" style="stop-color:#6366f1;stop-opacity:0.6" />
+            <stop offset="100%" style="stop-color:#10a37f;stop-opacity:0.4" />
+          </linearGradient>
+        </defs>
+      </svg>
+      <span>3DAgent</span>
+    </div>
+  </div>
+
+  <!-- Register Card -->
+  <section class="card login-card">
+    <h1 style="text-align: center; margin-bottom: 0.5rem;">Create Account</h1>
+    <p class="muted" style="text-align: center; margin-bottom: var(--spacing-xl); color: var(--text-secondary);">Join 3DAgent and start managing your 3D spaces</p>
+    
+    <form method="post" class="stack-form">
+      <label>
+        <span>Username</span>
+        <input name="username" required autocomplete="username" placeholder="Choose a username" type="text">
+      </label>
+      
+      <label>
+        <span>Email</span>
+        <input name="email" type="email" required autocomplete="email" placeholder="your@email.com">
+      </label>
+      
+      <label>
+        <span>Password</span>
+        <input name="password" type="password" required minlength="6" autocomplete="new-password" placeholder="At least 6 characters">
+      </label>
+      
+      <button type="submit" class="btn btn-primary btn-large" style="margin-top: var(--spacing-md);">
+        Create Account
+      </button>
+    </form>
+    
+    <div class="divider"></div>
+    
+    <p class="text-secondary" style="text-align: center; font-size: 0.9rem;">
+      Already have an account? <a href="{{ url_for('auth.login') }}" style="font-weight: 600;">Sign in</a>
+    </p>
+  </section>
+</div>
+{% endblock %}

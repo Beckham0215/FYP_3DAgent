@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Edit Location · {{ space.map_name }} · 3DAgent{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div class="page-title">
+    <h1>Edit Location</h1>
+    <p>{{ space.map_name }}</p>
+  </div>
+  <div class="page-header-actions">
+    <a href="{{ url_for('main.manage_assets', map_id=space.map_id) }}" class="btn btn-ghost">← Back</a>
+  </div>
+</div>
+
+<div class="page-main">
+  <section class="card narrow">
+    <h2 style="margin-top: 0;">Update Location Details</h2>
+    
+    <form method="post" class="stack-form">
+      <label>
+        <span>Location Name</span>
+        <input name="label_name" required value="{{ asset.label_name }}" placeholder="Kitchen" type="text">
+      </label>
+      
+      <label>
+        <span>Sweep UUID</span>
+        <input name="sweep_uuid" required value="{{ asset.sweep_uuid }}" placeholder="Sweep id string" type="text">
+      </label>
+      
+      <label>
+        <span>Description</span>
+        <input name="description" value="{{ asset.description or '' }}" placeholder="Optional" type="text">
+      </label>
+      
+      <label>
+        <span>Category</span>
+        <input name="category" value="{{ asset.category or '' }}" placeholder="e.g., room, bathroom" type="text">
+      </label>
+      
+      <div style="display: flex; gap: var(--spacing-md); margin-top: var(--spacing-lg);">
+        <button type="submit" class="btn btn-primary btn-large" style="flex: 1;">✓ Save Changes</button>
+        <a href="{{ url_for('main.manage_assets', map_id=space.map_id) }}" class="btn btn-ghost btn-large" style="flex: 1; text-align: center;">Cancel</a>
+      </div>
+    </form>
+  </section>
+</div>
+{% endblock %}

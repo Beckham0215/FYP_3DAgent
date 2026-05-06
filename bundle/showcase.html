@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <title></title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0, shrink-to-fit=no">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="mp:graph-query" content="src=graphql/prefetch.gql, query=GetModelPrefetch">
+  <meta name="mp:graph-query" content="src=graphql/prefetch.gql, query=GetRootPrefetch">
+  <meta name="mp:graph-query" content="src=graphql/roombounds.gql, query=GetRoomClassifications">
+
+  <!-- favicons -->
+  <link rel="icon" href="images/favicons/favicon.ico" sizes="32x32" />
+
+  <style>
+    body {
+      width: 100%;
+      height: 100%;
+      color: #fff;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      font-family: Roboto;
+    }
+
+    #app-container {
+      display: flex;
+      flex-direction: column;
+
+      /* without this positioning, descendent positions may have undefined behvavior in browsers like Safari that need positioning up the entire hierarchy */
+      position: relative;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    main {
+      flex: 1;
+      position: relative;
+      width: 100%;
+      background-color: #222;
+    }
+
+    #canvas-container {
+      position: absolute;
+      height: 100%;
+      width: 100%;
+      transition: width 500ms, height 500ms; /* CANVAS_RESIZE_ANIMATION_TIME */
+    }
+
+    canvas:focus {
+      outline: none;
+    }
+  </style>
+  <script defer type="module">
+    import * as three from "./vendors/three/0.176.0/three.module.min.js";
+    window.THREE = { ...three };
+  </script>
+  <script defer src="js/showcase.e6e8b46eeef592d65fda.js"></script><link href="css/showcase.css" rel="stylesheet">
+</head>
+
+<body class='showcase'>
+<div id='unsupported-browser' class='hidden'>
+</div>
+<section id='app-container'>
+  <main aria-labelledby='loading-header'>
+    <div id='canvas-container'>
+      <div id='control-kit-wrapper'></div>
+    </div>
+    <div id='loading-gui' class='hidden' data-testid='loading-gui'>
+      <div id='loading-background'></div>
+      <div id='tint'></div>
+      <h1 id='loading-header'></h1>
+      <div id='circleLoader' class='circle-loader'>
+        <div id='loader-cont'>
+          <svg id='svg' class='circle-loader-svg' width='96' height='96' viewPort='0 0 96 96' version='1.1' xmlns='http://www.w3.org/2000/svg'>
+            <circle r='44' cx='48' cy='48'></circle>
+            <circle id='bar' r='44' cx='48' cy='48'></circle>
+          </svg>
+          <button id='showcase-play' class='icon-play-unicode hidden' />
+        </div>
+        <div id='play-prompt' class='hidden'></div>
+      </div>
+      <h2 id='loading-presented-by' class='hidden'>
+        <div class='loading-label'>Presented by</div>
+        <div class='subheader'></div>
+      </h2>
+      <div id='loading-powered-by'>
+        <div class='loading-label'>Powered by</div>
+        <img id='loading-mp-logo'>
+      </div>
+    </div>
+    <div id="react-render-root"></div>
+    <div id="react-overlay-root"></div>
+  </main>
+</section>
+
+<script src='js/browser-check.js'></script>
+<script>
+  window.browserSupported = mpBrowserCheck.supported()
+  if (!window.browserSupported) {
+    mpBrowserCheck.displayErrorPage();
+  }
+</script>
+
+
+
+<script defer type="module">
+  if (window.browserSupported) {
+    var detailObject = {
+      config: {"apiHost":"https://my.matterport.com","pointerPreventDefault":false,"disableMobileRedirect":true},
+    };
+    window.dispatchEvent(new CustomEvent('app-start', { detail: detailObject }));
+  }
+</script>
+
+  <script>
+    window.addEventListener('mp-set-tracking-cookie', (e) => {
+      if (e.detail && e.detail.criteoAppId && e.detail.propertyKey) {
+        var criteoScript = document.createElement('script');
+        criteoScript.setAttribute('src', 'https://dynamic.criteo.com/js/ld/ld.js?a='+e.detail.criteoAppId);
+
+        criteoScript.onload = function() {
+          window.criteo_q = window.criteo_q || [];
+          window.criteo_q.push(
+            { event: "setAccount", account: parseInt(e.detail.criteoAppId) },
+            { event: "viewItem" , item: e.detail.propertyKey },
+            { event: "setData", ui_propertykey: e.detail.propertyKey, ui_domain: e.detail.referrer }
+          );
+        };
+
+        document.head.appendChild(criteoScript);
+      }
+    });
+  </script>
+
+</body>
+</html>

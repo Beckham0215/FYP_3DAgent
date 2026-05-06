@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="3DAgent - AI-powered 3D space navigation and management">
+  <title>{% block title %}3DAgent{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/modern.css') }}">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>">
+</head>
+<body class="{% block body_class %}{% endblock %}">
+  {% if session.get('user_id') %}
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <a href="{{ url_for('main.dashboard') }}" class="sidebar-brand">3DAgent</a>
+      </div>
+      <nav class="sidebar-content">
+
+        <!-- Overview -->
+        <div class="sidebar-section-label">Overview</div>
+        <ul class="sidebar-nav">
+          <li class="sidebar-nav-item">
+            <a href="{{ url_for('main.dashboard') }}"
+               class="sidebar-nav-link {% if request.endpoint == 'main.dashboard' %}active{% endif %}">
+              <span class="nav-icon">📊</span>
+              <span>Dashboard</span>
+            </a>
+          </li>
+        </ul>
+
+        <!-- Current Space (only when a space is open) -->
+        {% if request.view_args and request.view_args.get('map_id') %}
+          {% set current_map_id = request.view_args.get('map_id') %}
+          <div class="sidebar-section-label" style="margin-top: var(--spacing-lg);">Current Space</div>
+          <ul class="sidebar-nav">
+            <li class="sidebar-nav-item">
+              <a href="{{ url_for('main.viewer', map_id=current_map_id) }}"
+                 class="sidebar-nav-link {% if request.endpoint == 'main.viewer' %}active{% endif %}"
+                 target="_self">
+                <span class="nav-icon">👁️</span>
+                <span>3D Viewer</span>
+              </a>
+            </li>
+            <li class="sidebar-nav-item">
+              <a href="{{ url_for('main.manage_assets', map_id=current_map_id) }}"
+                 class="sidebar-nav-link {% if request.endpoint in ['main.manage_assets', 'main.edit_asset', 'main.edit_scanned_asset'] %}active{% endif %}">
+                <span class="nav-icon">📍</span>
+                <span>Tagged Locations</span>
+              </a>
+            </li>
+          </ul>
+        {% else %}
+          <div class="sidebar-section-label" style="margin-top: var(--spacing-lg);">Space Tools</div>
+          <ul class="sidebar-nav">
+            <li class="sidebar-nav-item">
+              <span class="sidebar-nav-link disabled" title="Open a space first">
+                <span class="nav-icon">👁️</span>
+                <span>3D Viewer</span>
+              </span>
+            </li>
+            <li class="sidebar-nav-item">
+              <span class="sidebar-nav-link disabled" title="Open a space first">
+                <span class="nav-icon">📍</span>
+                <span>Tagged Locations</span>
+              </span>
+            </li>
+          </ul>
+        {% endif %}
+
+        <!-- Help -->
+        <div class="sidebar-section-label" style="margin-top: var(--spacing-lg);">Help & Resources</div>
+        <ul class="sidebar-nav">
+          <li class="sidebar-nav-item">
+            <a href="{{ url_for('main.new_space') }}"
+               class="sidebar-nav-link {% if request.endpoint == 'main.new_space' %}active{% endif %}">
+              <span class="nav-icon">➕</span>
+              <span>Add New Space</span>
+            </a>
+          </li>
+          <li class="sidebar-nav-item">
+            <a href="{{ url_for('main.quick_tips') }}"
+               class="sidebar-nav-link {% if request.endpoint == 'main.quick_tips' %}active{% endif %}">
+              <span class="nav-icon">💡</span>
+              <span>Quick Tips & Guide</span>
+            </a>
+          </li>
+        </ul>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="user-profile">
+          <div class="user-avatar">{{ session.get('username', 'U')[:1].upper() }}</div>
+          <div class="user-info">
+            <div class="user-name">{{ session.get('username') }}</div>
+            <div class="user-role">User</div>
+          </div>
+        </div>
+        <a href="{{ url_for('auth.logout') }}" class="btn btn-small ghost" style="width: 100%; justify-content: center;">Logout</a>
+      </div>
+    </aside>
+  {% endif %}
+
+  <main>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <ul class="flash-list" role="region" aria-live="polite" aria-label="Notifications">
+          {% for category, message in messages %}
+            <li class="flash flash-{{ category }}">{{ message }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>
