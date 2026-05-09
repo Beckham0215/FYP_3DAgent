@@ -8,7 +8,7 @@ from flask import Blueprint, current_app, jsonify, request, session
 
 from app.extensions import db
 from app.label_match import resolve_asset
-from app.models import Asset, AssetsSummary, ChatHistoryLog, MatterportSpace
+from app.models import Asset, AssetsSummary, ChatHistoryLog, MatterportSpace, ScanHistory
 from app.services import blip_service, groq_service
 
 bp = Blueprint("api", __name__, url_prefix="/api")
@@ -139,6 +139,9 @@ def vla():
     message = (data.get("message") or "").strip()
     map_id = data.get("map_id")
     image_b64 = data.get("image_base64")
+    chat_history = data.get("history") or []  # [{role, content}, ...]
+    current_sweep_uuid = (data.get("current_sweep_uuid") or "").strip()
+    intent_override = (data.get("intent_override") or "").strip()
 
     if not message:
         return jsonify({"ok": False, "error": "message is required"}), 400
@@ -153,6 +156,22 @@ def vla():
 
     assets = Asset.query.filter_by(map_id=map_id).all()
     labels = [a.label_name for a in assets]
+
+    # WHERE AM I — second pass: image provided to suggest a location name
+    if intent_override == "where_am_i" and image_b64 and current_sweep_uuid:
+        suggested_name = None
+        if current_app.config.get("GROQ_API_KEY"):
+            try:
+                suggested_name = groq_service.suggest_location_name_from_image(image_b64)
+            except Exception:
+                current_app.logger.exception("[where_am_i] suggest_location_name_from_image failed")
+        return jsonify({
+            "ok": True,
+            "intent": "where_am_i",
+            "found": False,
+            "suggested_name": suggested_name,
+            "current_sweep_uuid": current_sweep_uuid,
+        })
 
     # Vision path: image provided → BLIP VQA
     if image_b64:
@@ -186,12 +205,39 @@ def vla():
     try:
         # Get context from session (last queried area)
         last_queried_area = session.get(f"last_queried_area_{map_id}")
-        routed = groq_service.route_intent(message, labels, last_queried_area)
+        routed = groq_service.route_intent(message, labels, last_queried_area, history=chat_history)
     except Exception as e:
         current_app.logger.exception("Groq routing error")
         return jsonify({"ok": False, "error": f"Router error: {e!s}"}), 503
 
     intent = routed.get("intent", "conversational")
+
+    if intent == "where_am_i":
+        if not current_sweep_uuid:
+            reply = "I'm not sure where you are — the sweep location hasn't been detected yet. Try moving around the space first."
+            _log_chat(uid, map_id, message, reply)
+            return jsonify({"ok": True, "intent": "chat", "response": reply})
+
+        asset = Asset.query.filter_by(map_id=map_id, sweep_uuid=current_sweep_uuid).first()
+        if asset:
+            reply = f"You are currently in {asset.label_name}."
+            _log_chat(uid, map_id, message, reply)
+            return jsonify({
+                "ok": True,
+                "intent": "where_am_i",
+                "found": True,
+                "label": asset.label_name,
+                "category": asset.category,
+                "response": reply,
+            })
+        else:
+            return jsonify({
+                "ok": True,
+                "intent": "where_am_i",
+                "found": False,
+                "needs_capture": True,
+                "current_sweep_uuid": current_sweep_uuid,
+            })
 
     if intent == "react_query":
         react_spec = groq_service.parse_react_request(message)
@@ -373,7 +419,7 @@ def vla():
     reply = routed.get("reply")
     if not reply:
         try:
-            reply = groq_service.chat_reply(message)
+            reply = groq_service.chat_reply(message, history=chat_history)
         except Exception as e:
             return jsonify({"ok": False, "error": f"Chat error: {e!s}"}), 503
     _log_chat(uid, map_id, message, reply)
@@ -614,6 +660,17 @@ def confirm_edit_scan_assets():
         saved_rows.append({"asset_name": cleaned_name, "count": cleaned_count})
 
     db.session.commit()
+
+    # Persist a history snapshot so change-detection works across scans
+    if saved_rows:
+        snapshot_dict = {r["asset_name"]: r["count"] for r in saved_rows}
+        db.session.add(ScanHistory(
+            map_id=map_id,
+            area_name=area_name,
+            snapshot=json.dumps(snapshot_dict),
+        ))
+        db.session.commit()
+
     current_app.logger.info(f"[Scan] User confirmed and saved {len(saved_rows)} assets for {area_name}")
     return jsonify({"ok": True, "saved": saved_rows, "message": f"Confirmed {len(saved_rows)} assets for {area_name}"})
 
@@ -819,6 +876,51 @@ def react_verify():
     })
 
 
+def _compute_scan_diff(current: dict, previous: dict) -> list:
+    all_keys = set(current) | set(previous)
+    changes = []
+    for key in sorted(all_keys):
+        cur  = current.get(key, 0)
+        prev = previous.get(key, 0)
+        if cur != prev:
+            changes.append({"item": key, "previous": prev, "current": cur, "delta": cur - prev})
+    return changes
+
+
+@bp.route("/spaces/<int:map_id>/scan-history", methods=["GET"])
+@api_login_required
+def get_scan_history(map_id):
+    """Return scan snapshots for an area and a diff between the two most recent ones."""
+    uid = session["user_id"]
+    area = request.args.get("area", "").strip() or None
+
+    space = MatterportSpace.query.filter_by(map_id=map_id, user_id=uid).first()
+    if not space:
+        return jsonify({"ok": False, "error": "Not found"}), 404
+
+    query = ScanHistory.query.filter_by(map_id=map_id)
+    if area:
+        query = query.filter_by(area_name=area)
+    records = query.order_by(ScanHistory.scanned_at.desc()).limit(10).all()
+
+    history = []
+    for r in records:
+        try:
+            snapshot = json.loads(r.snapshot)
+        except Exception:
+            snapshot = {}
+        history.append({
+            "id": r.id,
+            "area_name": r.area_name,
+            "scanned_at": r.scanned_at.strftime("%b %d %Y, %H:%M"),
+            "snapshot": snapshot,
+        })
+
+    diff = _compute_scan_diff(history[0]["snapshot"], history[1]["snapshot"]) if len(history) >= 2 else []
+
+    return jsonify({"ok": True, "history": history, "diff": diff})
+
+
 @bp.route("/spaces/<int:map_id>/assets-panel", methods=["GET"])
 @api_login_required
 def assets_panel_data(map_id):
@@ -888,4 +990,65 @@ def delete_scanned_asset_api(map_id, summary_id):
     db.session.delete(row)
     db.session.commit()
     return jsonify({"ok": True})
+
+
+@bp.route("/export/floorplan-pdf", methods=["POST"])
+@api_login_required
+def export_floorplan_pdf():
+    """Accept a base64-encoded floor plan PNG and return it as a PDF."""
+    import base64
+    import os
+    import tempfile
+    from datetime import datetime
+    from flask import Response
+    from fpdf import FPDF
+
+    uid = session["user_id"]
+    data = request.get_json(silent=True) or {}
+    image_b64 = (data.get("image_base64") or "").strip()
+    title = (data.get("title") or "Annotated Floor Plan").strip()
+
+    if not image_b64:
+        return jsonify({"ok": False, "error": "image_base64 is required"}), 400
+
+    # Strip data-URL header if present
+    if "," in image_b64:
+        image_b64 = image_b64.split(",", 1)[1]
+
+    try:
+        image_bytes = base64.b64decode(image_b64)
+    except Exception:
+        return jsonify({"ok": False, "error": "Invalid base64 image data"}), 400
+
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(image_bytes)
+            tmp_path = f.name
+
+        pdf = FPDF(orientation="L", unit="mm", format="A4")
+        pdf.set_auto_page_break(auto=False)
+        pdf.add_page()
+
+        # Title
+        pdf.set_font("Helvetica", "B", 18)
+        pdf.cell(0, 14, title, ln=True, align="C")
+        pdf.set_font("Helvetica", "", 10)
+        pdf.cell(0, 8, "Generated: " + datetime.now().strftime("%Y-%m-%d %H:%M"), ln=True, align="C")
+        pdf.ln(4)
+
+        # Image — fill available page width
+        page_w = pdf.w - pdf.l_margin - pdf.r_margin
+        pdf.image(tmp_path, x=pdf.l_margin, y=pdf.get_y(), w=page_w)
+
+        pdf_bytes = pdf.output()
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+    return Response(
+        bytes(pdf_bytes),
+        mimetype="application/pdf",
+        headers={"Content-Disposition": 'attachment; filename="floorplan.pdf"'},
+    )
 

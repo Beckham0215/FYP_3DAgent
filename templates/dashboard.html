@@ -4,7 +4,7 @@
 <div class="page-header">
   <div class="page-title">
     <h1>Your 3D Spaces</h1>
-    <p>Manage your Matterport spaces, tag locations, and run the VLA agent for intelligent navigation.</p>
+    <p>Manage Matterport spaces, tag locations, and run AI-powered navigation.</p>
   </div>
   <div class="page-header-actions">
     <a href="{{ url_for('main.new_space') }}" class="btn btn-primary btn-large">+ Add New Space</a>
@@ -13,39 +13,79 @@
 
 <div class="page-main">
   {% if spaces %}
-    <div class="space-lg">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>Space Name</th>
-            <th>Matterport ID</th>
-            <th>Created</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for s in spaces %}
-            <tr>
-              <td><strong>{{ s.map_name }}</strong></td>
-              <td><code>{{ s.matterport_sid }}</code></td>
-              <td>{{ s.created_date.strftime('%b %d, %Y') }}</td>
-              <td class="actions">
-                <a href="{{ url_for('main.viewer', map_id=s.map_id) }}" class="btn btn-small secondary" title="Open viewer">👁️ View</a>
-                <a href="{{ url_for('main.manage_assets', map_id=s.map_id) }}" class="btn btn-small secondary" title="Manage assets">📍 Assets</a>
-                <form method="post" action="{{ url_for('main.delete_space', map_id=s.map_id) }}" style="display:inline;" onsubmit="return confirm('Are you sure you want to delete this space? All assets will be deleted.');">
-                  <button type="submit" class="btn btn-small danger" title="Delete space">🗑️ Delete</button>
-                </form>
-              </td>
-            </tr>
+    <div class="space-grid">
+      {% for s in spaces %}
+      {% set stats = space_stats.get(s.map_id, {}) %}
+      <div class="space-card">
+
+        <div class="space-card-header">
+          <div>
+            <h3 class="space-card-name">{{ s.map_name }}</h3>
+            <code class="space-card-sid">{{ s.matterport_sid }}</code>
+          </div>
+          <span class="space-card-date">{{ s.created_date.strftime('%b %d, %Y') }}</span>
+        </div>
+
+        <!-- Stats row -->
+        <div class="space-card-stats">
+          <div class="stat-chip">
+            <span class="stat-chip-num">{{ stats.tagged_count or 0 }}</span>
+            <span class="stat-chip-label">Tagged</span>
+          </div>
+          <div class="stat-chip">
+            <span class="stat-chip-num">{{ stats.scanned_areas or 0 }}</span>
+            <span class="stat-chip-label">Scanned</span>
+          </div>
+          <div class="stat-chip">
+            <span class="stat-chip-num">{{ stats.total_items or 0 }}</span>
+            <span class="stat-chip-label">Items</span>
+          </div>
+        </div>
+
+        <!-- Category badges -->
+        {% if stats.categories %}
+        <div class="space-card-categories">
+          {% for cat in stats.categories[:5] %}
+            <span class="category-badge">{{ cat }}</span>
           {% endfor %}
-        </tbody>
-      </table>
+          {% if stats.categories|length > 5 %}
+            <span class="category-badge">+{{ stats.categories|length - 5 }} more</span>
+          {% endif %}
+        </div>
+        {% endif %}
+
+        <!-- Last scan -->
+        <div class="space-card-scan-status">
+          {% if stats.last_scanned %}
+            <span class="scan-dot scan-dot--ok"></span>
+            Last scan: {{ stats.last_scanned.strftime('%b %d, %Y') }}
+          {% else %}
+            <span class="scan-dot scan-dot--none"></span>
+            Not yet scanned
+          {% endif %}
+        </div>
+
+        <!-- Actions -->
+        <div class="space-card-actions">
+          <a href="{{ url_for('main.viewer', map_id=s.map_id) }}" class="btn secondary small">👁️ Viewer</a>
+          <a href="{{ url_for('main.manage_assets', map_id=s.map_id) }}" class="btn secondary small">📍 Assets</a>
+          <form method="post" action="{{ url_for('main.delete_space', map_id=s.map_id) }}"
+                style="display:inline;"
+                onsubmit="return confirm('Delete \'{{ s.map_name }}\'? This cannot be undone.');">
+            <button type="submit" class="btn danger small" title="Delete space">🗑️</button>
+          </form>
+        </div>
+
+      </div>
+      {% endfor %}
     </div>
   {% else %}
     <div class="card empty">
       <div class="card-empty-icon">📦</div>
-      <h2 style="margin-top: 0;">No Spaces Yet</h2>
-      <p class="text-secondary" style="margin-bottom: var(--spacing-lg);">Create your first 3D space to get started with powerful AI-powered navigation.</p>
+      <h2 style="margin-top:0;">No Spaces Yet</h2>
+      <p class="text-secondary" style="margin-bottom:var(--spacing-lg);">
+        Create your first 3D space to get started with AI-powered navigation.
+      </p>
       <a href="{{ url_for('main.new_space') }}" class="btn btn-primary btn-large">Create Your First Space</a>
     </div>
   {% endif %}

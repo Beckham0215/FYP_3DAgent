@@ -33,6 +33,15 @@
   let autoTagShouldStop = false;
   let pendingScanCounts = null;
   let selectedScanItems = {};
+  const chatHistory = []; // [{role:"user"|"assistant", content}] — last 10 msgs
+
+  // Minimap state
+  let allSweepData    = {};  // sweepId → SDK sweep object
+  let taggedSweepMap  = {};  // sweepId → {label_name, category}
+  let floorDataMap    = {};  // floorId → {id, sequence, name}
+  let currentFloorId  = null;
+  let minimapCollapsed = false;
+  let minimapPulse    = 0;   // 0..1 animation phase
 
   // --- Web Speech API Setup ---
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -99,6 +108,10 @@
     div.textContent = text;
     logEl.appendChild(div);
     logEl.scrollTop = logEl.scrollHeight;
+    if (role === "user" || role === "agent") {
+      chatHistory.push({ role: role === "user" ? "user" : "assistant", content: text });
+      if (chatHistory.length > 10) chatHistory.shift();
+    }
   }
 
   function setStatus(text) {
@@ -170,6 +183,7 @@
 
       setStatus("✓ SDK connected - you can navigate and use vision.");
       console.log("[3DAgent] ✓ SDK successfully connected");
+      initMinimap().catch(function (e) { console.warn("[3DAgent] Minimap init failed:", e); });
     } catch (e) {
       console.error("[3DAgent] Connection error:", e);
       const msg = e && e.message ? e.message : String(e);
@@ -231,6 +245,10 @@
   }
 
   async function postVla(body) {
+    // Attach all history except the current user message (last entry)
+    if (!body.history) {
+      body.history = chatHistory.slice(0, -1);
+    }
     const res = await fetch("/api/vla", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -735,6 +753,7 @@
         appendLine("agent", `✅ Auto-tagging complete. ${tagged} location(s) tagged.`);
       }
       if (autoTagStatusEl) autoTagStatusEl.textContent = autoTagShouldStop ? `Stopped — ${tagged} tagged` : `Done — ${tagged} tagged`;
+      if (tagged > 0) await _refreshLocationData();
     } catch (err) {
       console.error("[3DAgent] autoTagLocations error:", err);
       appendLine("system", "❌ Auto-tagging failed: " + (err.message || String(err)));
@@ -1085,6 +1104,7 @@
         quickAssetStatusEl.style.color = "var(--success)";
         document.getElementById("quick-asset-name").value = "";
         document.getElementById("quick-asset-category").value = "";
+        await _refreshLocationData();
 
         setTimeout(() => {
           quickAssetStatusEl.textContent = "";
@@ -1402,7 +1422,7 @@
     const invDetailRows = assetsPanelBody.querySelector("#ap-inv-detail-rows");
     const invBack      = assetsPanelBody.querySelector("#ap-inv-back");
 
-    function showAreaDetail(area) {
+    async function showAreaDetail(area) {
       if (!invDetailRows) return;
       invDetailRows.innerHTML = (areaMap[area] || []).map(s => `
         <div class="ap-row">
@@ -1430,6 +1450,49 @@
 
       if (areaChipsEl) areaChipsEl.style.display = "none";
       if (invDetail)   invDetail.style.display = "";
+
+      // Load and render scan history for this area
+      try {
+        const hRes = await fetch(`/api/spaces/${mapId}/scan-history?area=${encodeURIComponent(area)}`, { credentials: "same-origin" });
+        const hData = await hRes.json().catch(() => ({}));
+        if (hData.ok) {
+          let hHtml = `<div class="ap-section-title" style="margin-top:0.75rem;">📜 Scan History</div>`;
+
+          if (hData.diff && hData.diff.length) {
+            hHtml += `<div class="ap-history-diff">`;
+            hData.diff.forEach(ch => {
+              const sign = ch.delta > 0 ? "+" : "";
+              const cls  = ch.delta > 0 ? "diff-up" : "diff-down";
+              hHtml += `<div class="ap-diff-row ${cls}">
+                <span style="text-transform:capitalize;">${ch.item}</span>
+                <span>${ch.previous} → ${ch.current} (<strong>${sign}${ch.delta}</strong>)</span>
+              </div>`;
+            });
+            hHtml += `</div>`;
+          } else if (hData.history && hData.history.length >= 2) {
+            hHtml += `<div class="ap-empty">No changes since last scan.</div>`;
+          }
+
+          if (hData.history && hData.history.length) {
+            hHtml += `<div class="ap-history-timeline">`;
+            hData.history.forEach((rec, idx) => {
+              const items = Object.entries(rec.snapshot || {})
+                .map(([k, v]) => `${v} ${k}`).join(", ") || "—";
+              hHtml += `<div class="ap-history-entry ${idx === 0 ? 'ap-history-entry--latest' : ''}">
+                <span class="ap-history-date">${rec.scanned_at}</span>
+                <span class="ap-history-items">${items}</span>
+              </div>`;
+            });
+            hHtml += `</div>`;
+          } else {
+            hHtml += `<div class="ap-empty">No history yet — confirm a scan to start tracking.</div>`;
+          }
+
+          const historyEl = document.createElement("div");
+          historyEl.innerHTML = hHtml;
+          invDetailRows.appendChild(historyEl);
+        }
+      } catch (_) { /* history is optional, ignore errors */ }
     }
 
     assetsPanelBody.querySelectorAll(".ap-area-chip").forEach(chip => {
@@ -1473,6 +1536,556 @@
   if (assetsPanelOpen)  assetsPanelOpen.addEventListener("click", openAssetsPanel);
   if (assetsPanelClose) assetsPanelClose.addEventListener("click", closeAssetsPanel);
 
+  // ── Shared helper: refresh scan-location dropdown + open assets panel ────────
+
+  async function _refreshLocationData() {
+    await loadScanLocations();
+    try {
+      const r = await fetch(`/api/spaces/${mapId}/assets`, { credentials: "same-origin" });
+      const d = await r.json().catch(() => ({}));
+      _buildTaggedSweepMap(d.assets || []);
+    } catch (_) {}
+    if (assetsPanelEl && assetsPanelEl.style.display !== "none") {
+      await refreshAssetsPanel();
+    }
+  }
+
+  // ── Floor Plan Minimap ───────────────────────────────────────────────────────
+
+  const minimapPanel      = document.getElementById("minimap-popup");
+  const minimapCanvas     = document.getElementById("minimap-canvas");
+  const minimapOpenBtn    = document.getElementById("minimap-open-btn");
+  const minimapCloseBtn   = document.getElementById("minimap-close-btn");
+  const minimapExportBtn  = document.getElementById("minimap-export-btn");
+  const minimapFloorSel   = document.getElementById("minimap-floor-select");
+  const exportModal       = document.getElementById("floorplan-export-modal");
+  const exportCanvas      = document.getElementById("export-canvas");
+  const exportPngBtn      = document.getElementById("export-png-btn");
+  const exportPdfBtn      = document.getElementById("export-pdf-btn");
+  const exportModalClose  = document.getElementById("export-modal-close");
+
+  const CATEGORY_COLORS = {
+    "kitchen":       "#f97316",
+    "bedroom":       "#818cf8",
+    "bathroom":      "#22d3ee",
+    "living room":   "#a78bfa",
+    "office":        "#60a5fa",
+    "dining room":   "#f472b6",
+    "hallway":       "#94a3b8",
+    "conference":    "#fbbf24",
+    "lobby":         "#34d399",
+  };
+
+  function getCategoryColor(category) {
+    if (!category) return "#10a37f";
+    return CATEGORY_COLORS[category.toLowerCase()] || "#10a37f";
+  }
+
+  function _buildTaggedSweepMap(assets) {
+    taggedSweepMap = {};
+    (assets || []).forEach(function (a) {
+      if (a.sweep_uuid) {
+        taggedSweepMap[a.sweep_uuid] = { label_name: a.label_name, category: a.category };
+      }
+    });
+  }
+
+  function _getVisibleSweeps() {
+    var sweeps = Object.entries(allSweepData)
+      .filter(function (_a) { var s = _a[1]; return s && s.position; })
+      .map(function (_a) { var id = _a[0], s = _a[1]; return Object.assign({ id: id }, s); });
+    if (currentFloorId !== null) {
+      sweeps = sweeps.filter(function (s) { return s.floorInfo && s.floorInfo.id === currentFloorId; });
+    }
+    return sweeps;
+  }
+
+  function _computeProjection(sweeps, canvasW, canvasH, padding) {
+    var minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    sweeps.forEach(function (s) {
+      if (s.position.x < minX) minX = s.position.x;
+      if (s.position.x > maxX) maxX = s.position.x;
+      if (s.position.z < minZ) minZ = s.position.z;
+      if (s.position.z > maxZ) maxZ = s.position.z;
+    });
+    var rangeX  = maxX - minX || 1;
+    var rangeZ  = maxZ - minZ || 1;
+    var usableW = canvasW - padding * 2;
+    var usableH = canvasH - padding * 2;
+    var scale   = Math.min(usableW / rangeX, usableH / rangeZ);
+    var offsetX = padding + (usableW - rangeX * scale) / 2;
+    var offsetZ = padding + (usableH - rangeZ * scale) / 2;
+    return {
+      toCanvas: function (pos) {
+        return {
+          x: offsetX + (pos.x - minX) * scale,
+          y: offsetZ + (pos.z - minZ) * scale,
+        };
+      },
+      scale: scale,
+    };
+  }
+
+  function _drawFloorPlan(ctx, sweeps, proj, dotR, showLabels, labelPx, highlightUuid) {
+    // Neighbor edges (subtle path lines)
+    var drawnEdges = {};
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,255,255,0.07)";
+    ctx.lineWidth   = Math.max(0.5, dotR * 0.25);
+    sweeps.forEach(function (s) {
+      if (!s.neighbors) return;
+      var from = proj.toCanvas(s.position);
+      s.neighbors.forEach(function (nid) {
+        var edgeKey = s.id < nid ? s.id + "|" + nid : nid + "|" + s.id;
+        if (drawnEdges[edgeKey]) return;
+        drawnEdges[edgeKey] = true;
+        var ns = allSweepData[nid];
+        if (!ns || !ns.position) return;
+        var to = proj.toCanvas(ns.position);
+        ctx.beginPath();
+        ctx.moveTo(from.x, from.y);
+        ctx.lineTo(to.x, to.y);
+        ctx.stroke();
+      });
+    });
+    ctx.restore();
+
+    // Sweeps (tagged → colored, untagged → dim white)
+    sweeps.forEach(function (s) {
+      if (s.id === highlightUuid) return; // drawn last
+      var pt  = proj.toCanvas(s.position);
+      var tag = taggedSweepMap[s.id];
+      if (tag) {
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, dotR * 1.5, 0, Math.PI * 2);
+        ctx.fillStyle = getCategoryColor(tag.category);
+        ctx.fill();
+        if (showLabels) {
+          var lbl = tag.label_name.length > 15 ? tag.label_name.slice(0, 13) + "…" : tag.label_name;
+          ctx.save();
+          ctx.font        = "600 " + labelPx + "px Inter,sans-serif";
+          ctx.textAlign   = "center";
+          ctx.fillStyle   = "#ffffff";
+          ctx.shadowColor = "rgba(0,0,0,0.9)";
+          ctx.shadowBlur  = 4;
+          ctx.fillText(lbl, pt.x, pt.y - dotR * 1.5 - 3);
+          ctx.restore();
+        }
+      } else {
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, dotR, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(255,255,255,0.22)";
+        ctx.fill();
+      }
+    });
+
+    // Current-position dot with pulsing ring
+    if (highlightUuid && allSweepData[highlightUuid] && allSweepData[highlightUuid].position) {
+      var pt2  = proj.toCanvas(allSweepData[highlightUuid].position);
+      var pulseR = dotR * 2.8 + minimapPulse * dotR * 2.5;
+      ctx.beginPath();
+      ctx.arc(pt2.x, pt2.y, pulseR, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(16,163,127," + (0.28 * (1 - minimapPulse)) + ")";
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(pt2.x, pt2.y, dotR * 2, 0, Math.PI * 2);
+      ctx.fillStyle = "#10a37f";
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(pt2.x, pt2.y, dotR, 0, Math.PI * 2);
+      ctx.fillStyle = "#ffffff";
+      ctx.fill();
+    }
+  }
+
+  function renderMinimap() {
+    if (!minimapCanvas) return;
+    var sweeps = _getVisibleSweeps();
+    var ctx    = minimapCanvas.getContext("2d");
+    var W = minimapCanvas.width, H = minimapCanvas.height;
+    ctx.clearRect(0, 0, W, H);
+
+    if (!sweeps.length) {
+      ctx.fillStyle = "rgba(13,17,26,0.95)";
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = "rgba(255,255,255,0.3)";
+      ctx.font = "11px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("Waiting for SDK data…", W / 2, H / 2);
+      return;
+    }
+
+    ctx.fillStyle = "rgba(13,17,26,0.95)";
+    ctx.fillRect(0, 0, W, H);
+
+    var proj = _computeProjection(sweeps, W, H, 20);
+    _drawFloorPlan(ctx, sweeps, proj, 3, true, 8, currentSweepUuid);
+
+    // Floor label if multiple floors exist
+    var floorKeys = Object.keys(floorDataMap);
+    if (floorKeys.length > 1) {
+      var floorName = currentFloorId !== null
+        ? (floorDataMap[Object.keys(floorDataMap).find(function (k) { return floorDataMap[k].id === currentFloorId; })] || {}).name || ("Floor " + currentFloorId)
+        : "All floors";
+      ctx.fillStyle = "rgba(255,255,255,0.35)";
+      ctx.font = "8px sans-serif";
+      ctx.textAlign = "left";
+      ctx.fillText(floorName, 5, H - 5);
+    }
+  }
+
+  function _animateMinimapLoop() {
+    minimapPulse = (minimapPulse + 0.025) % 1;
+    renderMinimap();
+    requestAnimationFrame(_animateMinimapLoop);
+  }
+
+  function _populateFloorSelect(floors) {
+    if (!minimapFloorSel) return;
+    var floorList = Object.values(floors);
+    if (floorList.length <= 1) { minimapFloorSel.style.display = "none"; return; }
+    minimapFloorSel.style.display = "";
+    minimapFloorSel.innerHTML = '<option value="">All floors</option>';
+    floorList.sort(function (a, b) { return (a.sequence || 0) - (b.sequence || 0); }).forEach(function (f) {
+      var opt = document.createElement("option");
+      opt.value       = f.id;
+      opt.textContent = f.name || ("Floor " + ((f.sequence || 0) + 1));
+      minimapFloorSel.appendChild(opt);
+    });
+  }
+
+  async function initMinimap() {
+    if (!sdk || !minimapCanvas) return;
+
+    // Start the animation loop immediately so the canvas renders a loading state
+    _animateMinimapLoop();
+
+    // Load assets for label overlay
+    try {
+      var r = await fetch("/api/spaces/" + mapId + "/assets", { credentials: "same-origin" });
+      var d = await r.json().catch(function () { return {}; });
+      _buildTaggedSweepMap(d.assets || []);
+    } catch (e) { console.warn("[3DAgent Minimap] Could not load assets:", e); }
+
+    // Primary source: sdk.Model.getData() gives full sweep positions.
+    // The model may not be ready immediately after SDK connect, so we retry.
+    async function _loadFromModel() {
+      if (!sdk.Model || typeof sdk.Model.getData !== "function") return false;
+      try {
+        var modelData = await sdk.Model.getData();
+        var sweeps = (modelData && Array.isArray(modelData.sweeps)) ? modelData.sweeps : [];
+        if (!sweeps.length) return false;
+        sweeps.forEach(function (s) {
+          var id = s.sid || s.uuid;
+          if (!id || !s.position) return;
+          allSweepData[id] = {
+            sid:       id,
+            position:  s.position,
+            neighbors: s.neighbors || [],
+            floorInfo: s.floorInfo || null,
+          };
+        });
+        console.log("[3DAgent Minimap] Loaded " + Object.keys(allSweepData).length + " sweeps from Model.getData()");
+        return Object.keys(allSweepData).length > 0;
+      } catch (e) {
+        console.warn("[3DAgent Minimap] Model.getData() failed:", e);
+        return false;
+      }
+    }
+
+    // Try immediately, then retry at 2 s, 5 s, 10 s intervals
+    var got = await _loadFromModel();
+    if (!got) {
+      var delays = [2000, 5000, 10000];
+      for (var i = 0; i < delays.length; i++) {
+        await new Promise(function (res) { setTimeout(res, delays[i]); });
+        got = await _loadFromModel();
+        if (got) break;
+      }
+    }
+
+    // Supplementary: sdk.Sweep.data fills in any sweeps Model.getData() missed
+    // and provides real-time connectivity updates
+    try {
+      if (sdk.Sweep && sdk.Sweep.data && typeof sdk.Sweep.data.subscribe === "function") {
+        sdk.Sweep.data.subscribe(function (sweepMap) {
+          Object.entries(sweepMap || {}).forEach(function (_a) {
+            var id = _a[0], s = _a[1];
+            if (!s) return;
+            if (!allSweepData[id]) allSweepData[id] = { sid: id };
+            // Only fill in position if we don't already have one from Model.getData()
+            if (s.position && !allSweepData[id].position) allSweepData[id].position = s.position;
+            if (s.neighbors)  allSweepData[id].neighbors = s.neighbors;
+            if (s.floorInfo)  allSweepData[id].floorInfo = s.floorInfo;
+          });
+        });
+      }
+    } catch (e) { console.warn("[3DAgent Minimap] Sweep.data subscribe failed:", e); }
+
+    // Floor data for the floor-filter dropdown
+    try {
+      if (sdk.Floor && sdk.Floor.data && typeof sdk.Floor.data.subscribe === "function") {
+        sdk.Floor.data.subscribe(function (floorMap) {
+          floorDataMap = {};
+          Object.entries(floorMap || {}).forEach(function (_a) { floorDataMap[_a[0]] = _a[1]; });
+          _populateFloorSelect(floorDataMap);
+        });
+      }
+    } catch (e) { console.warn("[3DAgent Minimap] Floor.data subscribe failed:", e); }
+  }
+
+  // Open minimap popup (🗺 button in uuid-tracker header)
+  if (minimapOpenBtn) {
+    minimapOpenBtn.addEventListener("click", function () {
+      if (!minimapPanel) return;
+      var isOpen = minimapPanel.style.display !== "none";
+      minimapPanel.style.display = isOpen ? "none" : "block";
+    });
+  }
+
+  // Close minimap popup (✕ inside popup header)
+  if (minimapCloseBtn) {
+    minimapCloseBtn.addEventListener("click", function () {
+      if (minimapPanel) minimapPanel.style.display = "none";
+    });
+  }
+
+  // Floor filter
+  if (minimapFloorSel) {
+    minimapFloorSel.addEventListener("change", function () {
+      var val = minimapFloorSel.value;
+      currentFloorId = val === "" ? null : parseInt(val, 10);
+    });
+  }
+
+  // Open export modal
+  if (minimapExportBtn) {
+    minimapExportBtn.addEventListener("click", function () { openExportModal(); });
+  }
+
+  // Close export modal
+  if (exportModalClose) {
+    exportModalClose.addEventListener("click", function () {
+      if (exportModal) exportModal.style.display = "none";
+    });
+  }
+  if (exportModal) {
+    exportModal.addEventListener("click", function (e) {
+      if (e.target === exportModal) exportModal.style.display = "none";
+    });
+  }
+
+  function openExportModal() {
+    if (!exportModal || !exportCanvas) return;
+    renderExportCanvas();
+    exportModal.style.display = "flex";
+  }
+
+  function renderExportCanvas() {
+    if (!exportCanvas) return;
+    var sweeps = _getVisibleSweeps();
+    var ctx    = exportCanvas.getContext("2d");
+    var W = exportCanvas.width, H = exportCanvas.height;
+    ctx.clearRect(0, 0, W, H);
+
+    // Background
+    ctx.fillStyle = "#0d111a";
+    ctx.fillRect(0, 0, W, H);
+
+    var HEADER = 64, FOOTER = 48;
+
+    if (!sweeps.length) {
+      ctx.fillStyle = "rgba(255,255,255,0.4)";
+      ctx.font = "18px Inter,sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("No floor plan data available yet.", W / 2, H / 2 - 10);
+      ctx.font = "13px Inter,sans-serif";
+      ctx.fillStyle = "rgba(255,255,255,0.25)";
+      ctx.fillText("Navigate the space first so the SDK loads sweep positions.", W / 2, H / 2 + 16);
+    } else {
+      // Compute projection into the body area (below header, above footer)
+      var bodyH = H - HEADER - FOOTER;
+      var proj  = _computeProjection(sweeps, W, bodyH, 50);
+      var shiftedProj = {
+        toCanvas: function (pos) {
+          var c = proj.toCanvas(pos);
+          return { x: c.x, y: c.y + HEADER };
+        },
+        scale: proj.scale,
+      };
+      _drawFloorPlan(ctx, sweeps, shiftedProj, 6, true, 12, null);
+
+      // Category legend
+      var seen = {};
+      Object.values(taggedSweepMap).forEach(function (t) {
+        if (t.category && !seen[t.category]) { seen[t.category] = true; }
+      });
+      var cats = Object.keys(seen);
+      if (cats.length) {
+        var lx = 20, ly = H - FOOTER + 16;
+        ctx.font = "11px Inter,sans-serif";
+        ctx.textAlign = "left";
+        cats.forEach(function (cat) {
+          ctx.beginPath();
+          ctx.arc(lx + 5, ly, 5, 0, Math.PI * 2);
+          ctx.fillStyle = getCategoryColor(cat);
+          ctx.fill();
+          ctx.fillStyle = "rgba(255,255,255,0.65)";
+          ctx.fillText(cat, lx + 14, ly + 4);
+          lx += ctx.measureText(cat).width + 32;
+        });
+      }
+    }
+
+    // Header title
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 20px Inter,sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("Annotated Floor Plan", W / 2, 36);
+
+    // Footer timestamp
+    ctx.fillStyle = "rgba(255,255,255,0.35)";
+    ctx.font = "11px Inter,sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("Generated: " + new Date().toLocaleString(), W / 2, H - 14);
+  }
+
+  // PNG download
+  if (exportPngBtn) {
+    exportPngBtn.addEventListener("click", function () {
+      if (!exportCanvas) return;
+      var link = document.createElement("a");
+      link.download = "floorplan.png";
+      link.href = exportCanvas.toDataURL("image/png");
+      link.click();
+    });
+  }
+
+  // PDF download (server-side wrapping)
+  if (exportPdfBtn) {
+    exportPdfBtn.addEventListener("click", async function () {
+      if (!exportCanvas) return;
+      exportPdfBtn.disabled = true;
+      exportPdfBtn.textContent = "Generating PDF…";
+      try {
+        var imgData = exportCanvas.toDataURL("image/png");
+        var res = await fetch("/api/export/floorplan-pdf", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ map_id: mapId, image_base64: imgData, title: "Annotated Floor Plan" }),
+        });
+        if (!res.ok) throw new Error("Server returned " + res.status);
+        var blob = await res.blob();
+        var url  = URL.createObjectURL(blob);
+        var link = document.createElement("a");
+        link.href     = url;
+        link.download = "floorplan.pdf";
+        link.click();
+        URL.revokeObjectURL(url);
+      } catch (e) {
+        appendLine("system", "PDF export failed: " + e.message);
+      } finally {
+        exportPdfBtn.disabled = false;
+        exportPdfBtn.textContent = "📄 Download PDF";
+      }
+    });
+  }
+
+  // ── Where am I: mark-suggestion UI ─────────────────────────────────────────
+
+  async function doMarkLocation(name, sweepUuid, wrapper) {
+    const textEl = wrapper.querySelector(".wai-text");
+    const actionsEl = wrapper.querySelector(".wai-actions");
+    const editAreaEl = wrapper.querySelector(".wai-edit-area");
+
+    textEl.textContent = `Marking current location as "${name}"…`;
+    if (actionsEl) actionsEl.style.display = "none";
+    if (editAreaEl) editAreaEl.style.display = "none";
+
+    try {
+      const res = await fetch("/api/mark-asset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ map_id: mapId, asset_name: name, sweep_uuid: sweepUuid }),
+      });
+      const d = await res.json().catch(() => ({ ok: false }));
+      if (d.ok) {
+        textEl.textContent = `✓ Location marked as "${name}"!`;
+        await _refreshLocationData();
+      } else {
+        textEl.textContent = `Failed to mark: ${d.error || "unknown error"}`;
+      }
+    } catch (e) {
+      textEl.textContent = `Error: ${e.message}`;
+    }
+  }
+
+  function showMarkSuggestion(suggestedName, sweepUuid) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "msg msg-agent";
+
+    const baseText = suggestedName
+      ? `Current sweep has not yet been marked. Based on my view, this looks like "${suggestedName}". Do you want to mark it as "${suggestedName}"?`
+      : "Current sweep has not yet been marked. I couldn't identify the location from the view. Would you like to give it a name?";
+
+    wrapper.innerHTML = `
+      <div class="wai-text">${baseText}</div>
+      <div class="wai-actions">
+        ${suggestedName ? `<button type="button" class="btn small primary wai-yes">Yes, mark as "${suggestedName}"</button>` : ""}
+        <button type="button" class="btn small secondary wai-edit">Edit name</button>
+        <button type="button" class="btn small ghost wai-no">No</button>
+      </div>
+      <div class="wai-edit-area" style="display:none;">
+        <input type="text" class="wai-name-input" placeholder="Enter location name…" value="${suggestedName || ""}">
+        <div class="wai-edit-actions">
+          <button type="button" class="btn small primary wai-confirm">Confirm</button>
+          <button type="button" class="btn small ghost wai-cancel">Cancel</button>
+        </div>
+      </div>
+    `;
+
+    logEl.appendChild(wrapper);
+    logEl.scrollTop = logEl.scrollHeight;
+
+    const actionsEl = wrapper.querySelector(".wai-actions");
+    const editAreaEl = wrapper.querySelector(".wai-edit-area");
+    const nameInput = wrapper.querySelector(".wai-name-input");
+
+    const yesBtn = wrapper.querySelector(".wai-yes");
+    if (yesBtn) {
+      yesBtn.addEventListener("click", function () {
+        doMarkLocation(suggestedName, sweepUuid, wrapper);
+      });
+    }
+
+    wrapper.querySelector(".wai-edit").addEventListener("click", function () {
+      actionsEl.style.display = "none";
+      editAreaEl.style.display = "";
+      nameInput.focus();
+      nameInput.select();
+    });
+
+    wrapper.querySelector(".wai-no").addEventListener("click", function () {
+      wrapper.querySelector(".wai-text").textContent = "Understood, current sweep left unmarked.";
+      actionsEl.style.display = "none";
+    });
+
+    wrapper.querySelector(".wai-confirm").addEventListener("click", function () {
+      const customName = nameInput.value.trim();
+      if (!customName) { nameInput.focus(); return; }
+      doMarkLocation(customName, sweepUuid, wrapper);
+    });
+
+    wrapper.querySelector(".wai-cancel").addEventListener("click", function () {
+      editAreaEl.style.display = "none";
+      actionsEl.style.display = "";
+    });
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+
   form.addEventListener("submit", async function (ev) {
     ev.preventDefault();
     const message = (input.value || "").trim();
@@ -1483,7 +2096,32 @@
     appendLine("user", message);
 
     try {
-      let data = await postVla({ message: message, map_id: mapId });
+      let data = await postVla({ message: message, map_id: mapId, current_sweep_uuid: currentSweepUuid });
+
+      if (data.intent === "where_am_i") {
+        if (data.found) {
+          appendLine("agent", data.response || `You are currently in ${data.label}.`);
+        } else if (data.needs_capture) {
+          appendLine("system", "Capturing current view to identify your location…");
+          let imageBase64;
+          try {
+            imageBase64 = await captureViewportBase64();
+          } catch (err) {
+            appendLine("system", "Could not capture view: " + err.message);
+            appendLine("agent", "Current sweep is not yet marked. Navigate to a location and say 'mark this as [name]' to tag it.");
+            return;
+          }
+          data = await postVla({
+            message: message,
+            map_id: mapId,
+            current_sweep_uuid: currentSweepUuid,
+            image_base64: imageBase64,
+            intent_override: "where_am_i",
+          });
+          showMarkSuggestion(data.suggested_name || null, data.current_sweep_uuid || currentSweepUuid);
+        }
+        return;
+      }
 
       if (data.needs_capture && data.intent === "visual") {
         appendLine("system", "Capturing view for vision…");
@@ -1508,6 +2146,7 @@
         try {
           const markResult = await markAsset(data.asset_name);
           appendLine("agent", markResult.message || `✓ Location marked as '${data.asset_name}'!`);
+          await _refreshLocationData();
         } catch (err) {
           appendLine("system", "Marking failed: " + (err.message || String(err)));
         }

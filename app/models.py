@@ -59,3 +59,13 @@ class AssetsSummary(db.Model):
     asset_name = db.Column(db.String(100), nullable=False, index=True)
     count = db.Column(db.Integer, nullable=False, default=0)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
+class ScanHistory(db.Model):
+    __tablename__ = "scan_history"
+
+    id = db.Column(db.Integer, primary_key=True)
+    map_id = db.Column(db.Integer, db.ForeignKey("matterport_space.map_id"), nullable=False, index=True)
+    area_name = db.Column(db.String(200), nullable=True, index=True)
+    scanned_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    snapshot = db.Column(db.Text, nullable=False)  # JSON: {"chair": 3, "table": 1}

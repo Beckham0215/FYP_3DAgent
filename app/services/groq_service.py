@@ -13,23 +13,36 @@ def _client():
     return Groq(api_key=key)
 
 
-def route_intent(user_message: str, asset_labels: list[str], last_queried_area: str | None = None) -> dict:
+def route_intent(user_message: str, asset_labels: list[str], last_queried_area: str | None = None, history: list | None = None) -> dict:
     """
     Returns dict with keys: intent (navigate|visual|conversational|mark_asset|activity|query_assets),
     destination_label (optional), asset_name (optional), reply (optional), query_area (optional).
     """
     labels_text = ", ".join(asset_labels) if asset_labels else "(none - add assets in the dashboard)"
-    
-    # NEW: Inject conversational memory into the prompt
+
     context_instruction = ""
     if last_queried_area:
-        context_instruction = f"MEMORY CONTEXT: The user recently asked about the area '{last_queried_area}'. If they ask a follow-up question without naming a room (e.g., 'what about the chairs?'), assume they mean '{last_queried_area}'.\n\n"
+        context_instruction = f"MEMORY CONTEXT: The user recently asked about '{last_queried_area}'. If they ask a follow-up without naming a room, assume they mean '{last_queried_area}'.\n\n"
+
+    history_context = ""
+    if history:
+        recent = history[-6:]  # last 3 exchanges
+        lines = []
+        for msg in recent:
+            role = "User" if msg.get("role") == "user" else "Agent"
+            content = (msg.get("content") or "").strip()
+            if content:
+                lines.append(f"{role}: {content}")
+        if lines:
+            history_context = "RECENT CONVERSATION:\n" + "\n".join(lines) + "\n\n"
 
     system = (
         "You are the semantic router for 3DAgent in a Matterport 3D space.\n"
         f"Available navigation labels (exact strings users may want to visit): {labels_text}\n\n"
+        f"{history_context}"
         f"{context_instruction}"
         "Classify the user message into exactly one intent:\n"
+        "- where_am_i: user asks about their current location, which room or area they are in right now (e.g. 'where am I', 'what room is this', 'which location am I in', 'what place is this', 'tell me my current location').\n"
         "- react_query: user has a complex multi-step planning request requiring room suitability verification (e.g. 'I need a meeting room for 10 people', 'find a room that fits 15 people', 'which room has enough chairs for a seminar', 'I need to host a dinner for 8 people', 'set up a conference for 20 attendees').\n"
         "- query_assets: user asks about what assets/items are in a specific room or area (e.g. 'what are the assets in bedroom 1', 'how many closets are in bedroom 1', 'what furniture is in the kitchen', 'list items in living room').\n"
         "- navigate: user wants to go to a place, room, or tagged sweep (e.g. 'take me to the kitchen', 'go to bedroom').\n"
@@ -38,8 +51,9 @@ def route_intent(user_message: str, asset_labels: list[str], last_queried_area: 
         "- activity: user wants to do an activity that requires going to a specific location (e.g. 'I want to cook', 'I want to sleep', 'I need to work').\n"
         "- conversational: greetings, small talk, general questions not about the current view or moving in the space.\n\n"
         "Respond with ONLY valid JSON (no markdown fences):\n"
-        '{"intent":"navigate"|"visual"|"mark_asset"|"activity"|"conversational"|"query_assets"|"react_query","destination_label":string or null,"asset_name":string or null,"query_area":string or null,"reply":string or null}\n'
+        '{"intent":"navigate"|"visual"|"mark_asset"|"activity"|"conversational"|"query_assets"|"react_query"|"where_am_i","destination_label":string or null,"asset_name":string or null,"query_area":string or null,"reply":string or null}\n'
         "Rules:\n"
+        "- For where_am_i: set all other fields to null. This triggers a database lookup of the user's current location.\n"
         "- For react_query: set all other fields to null. This triggers multi-step agentic reasoning.\n"
         "- For query_assets: extract the room/area name and put it in query_area. If no room is mentioned, use the MEMORY CONTEXT area. Set destination_label and asset_name to null.\n"
         "- For navigate: set destination_label to the best matching label from the list (case-insensitive match). "
@@ -62,7 +76,7 @@ def route_intent(user_message: str, asset_labels: list[str], last_queried_area: 
                     "properties": {
                         "intent": {
                             "type": "string",
-                            "enum": ["navigate", "visual", "mark_asset", "activity", "conversational", "query_assets", "react_query"],
+                            "enum": ["navigate", "visual", "mark_asset", "activity", "conversational", "query_assets", "react_query", "where_am_i"],
                         },
                         "destination_label": {
                             "anyOf": [{"type": "string"}, {"type": "null"}],
@@ -132,7 +146,7 @@ def route_intent(user_message: str, asset_labels: list[str], last_queried_area: 
         return _parse_router_json(text)
 
 
-def chat_reply(user_message: str, context: str | None = None) -> str:
+def chat_reply(user_message: str, context: str | None = None, history: list | None = None) -> str:
     system = (
         "You are 3DAgent, a concise assistant for navigating and understanding Matterport 3D spaces. "
         "Keep answers short unless the user asks for detail."
@@ -140,12 +154,17 @@ def chat_reply(user_message: str, context: str | None = None) -> str:
     if context:
         system += f"\nContext: {context}"
     model = current_app.config.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+    messages = [{"role": "system", "content": system}]
+    if history:
+        for msg in history[-8:]:  # last 4 exchanges
+            role = msg.get("role", "user")
+            content = (msg.get("content") or "").strip()
+            if content and role in ("user", "assistant"):
+                messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": user_message})
     completion = _client().chat.completions.create(
         model=model,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user_message},
-        ],
+        messages=messages,
         temperature=0.2,
         max_tokens=512,
     )
@@ -206,7 +225,7 @@ def _parse_router_json(text: str) -> dict:
             "reply": "I could not parse the routing response. Please try rephrasing.",
         }
     intent = data.get("intent", "conversational")
-    if intent not in ("navigate", "visual", "conversational", "mark_asset", "activity", "query_assets", "react_query"):
+    if intent not in ("navigate", "visual", "conversational", "mark_asset", "activity", "query_assets", "react_query", "where_am_i"):
         intent = "conversational"
     return {
         "intent": intent,

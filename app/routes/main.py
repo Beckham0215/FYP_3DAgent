@@ -23,7 +23,38 @@ def index():
 def dashboard():
     uid = session["user_id"]
     spaces = MatterportSpace.query.filter_by(user_id=uid).order_by(MatterportSpace.created_date.desc()).all()
-    return render_template("dashboard.html", spaces=spaces)
+
+    space_stats = {}
+    for space in spaces:
+        assets_all = Asset.query.filter_by(map_id=space.map_id).all()
+        categories = sorted({a.category for a in assets_all if a.category})
+
+        total_items = (
+            db.session.query(db.func.sum(AssetsSummary.count))
+            .filter(AssetsSummary.map_id == space.map_id)
+            .scalar() or 0
+        )
+        scanned_areas = (
+            db.session.query(AssetsSummary.area_name)
+            .filter(AssetsSummary.map_id == space.map_id)
+            .distinct()
+            .count()
+        )
+        latest_scan = (
+            AssetsSummary.query.filter_by(map_id=space.map_id)
+            .order_by(AssetsSummary.created_at.desc())
+            .first()
+        )
+
+        space_stats[space.map_id] = {
+            "tagged_count": len(assets_all),
+            "categories": categories,
+            "total_items": int(total_items),
+            "scanned_areas": scanned_areas,
+            "last_scanned": latest_scan.created_at if latest_scan else None,
+        }
+
+    return render_template("dashboard.html", spaces=spaces, space_stats=space_stats)
 
 
 @bp.route("/spaces/new", methods=["GET", "POST"])
