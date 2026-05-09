@@ -1,6 +1,8 @@
+import csv
+import io
 from datetime import datetime
 import os
-from flask import Blueprint, current_app, flash, redirect, render_template, request, session, url_for
+from flask import Blueprint, Response, current_app, flash, redirect, render_template, request, session, url_for
 
 from app.extensions import db
 from app.models import Asset, AssetsSummary, MatterportSpace
@@ -211,6 +213,99 @@ def delete_space(map_id):
     flash(f"Space '{space_name}' deleted successfully.", "success")
     
     return redirect(url_for("main.dashboard"))
+
+
+@bp.route("/spaces/<int:map_id>/export/csv")
+@login_required
+def export_csv(map_id):
+    """Export scanned asset inventory as CSV."""
+    uid = session["user_id"]
+    space = MatterportSpace.query.filter_by(map_id=map_id, user_id=uid).first_or_404()
+    summaries = (
+        AssetsSummary.query.filter_by(map_id=map_id)
+        .order_by(AssetsSummary.area_name.asc(), AssetsSummary.asset_name.asc())
+        .all()
+    )
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["Space", "Room / Area", "Asset / Item", "Count", "Recorded Date"])
+    for row in summaries:
+        writer.writerow([
+            space.map_name,
+            row.area_name or "Unspecified",
+            row.asset_name,
+            row.count,
+            row.created_at.strftime("%Y-%m-%d %H:%M") if row.created_at else "",
+        ])
+    filename = f"inventory_{space.map_name}_{datetime.utcnow().strftime('%Y%m%d')}.csv"
+    return Response(
+        buf.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@bp.route("/spaces/<int:map_id>/export/pdf")
+@login_required
+def export_pdf(map_id):
+    """Export scanned asset inventory as PDF."""
+    uid = session["user_id"]
+    space = MatterportSpace.query.filter_by(map_id=map_id, user_id=uid).first_or_404()
+    summaries = (
+        AssetsSummary.query.filter_by(map_id=map_id)
+        .order_by(AssetsSummary.area_name.asc(), AssetsSummary.asset_name.asc())
+        .all()
+    )
+
+    try:
+        from fpdf import FPDF
+
+        pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.add_page()
+        pdf.set_font("Helvetica", "B", 16)
+        pdf.cell(0, 10, "3DAgent - Asset Inventory Report", ln=True, align="C")
+        pdf.set_font("Helvetica", "", 11)
+        pdf.cell(0, 7, f"Space: {space.map_name}", ln=True, align="C")
+        pdf.cell(0, 7, f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC", ln=True, align="C")
+        pdf.ln(6)
+
+        # Table header
+        pdf.set_fill_color(30, 30, 30)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Helvetica", "B", 10)
+        col_w = [60, 70, 30, 30]
+        headers = ["Room / Area", "Asset / Item", "Count", "Date"]
+        for i, h in enumerate(headers):
+            pdf.cell(col_w[i], 8, h, border=1, fill=True)
+        pdf.ln()
+
+        # Table rows
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_font("Helvetica", "", 10)
+        fill = False
+        last_area = None
+        for row in summaries:
+            area = row.area_name or "Unspecified"
+            if area != last_area:
+                fill = not fill
+                last_area = area
+            pdf.set_fill_color(240, 248, 240) if fill else pdf.set_fill_color(255, 255, 255)
+            date_str = row.created_at.strftime("%Y-%m-%d") if row.created_at else ""
+            for val, w in zip([area, row.asset_name.title(), str(row.count), date_str], col_w):
+                pdf.cell(w, 7, val, border=1, fill=True)
+            pdf.ln()
+
+        pdf_bytes = pdf.output()
+        filename = f"inventory_{space.map_name}_{datetime.utcnow().strftime('%Y%m%d')}.pdf"
+        return Response(
+            bytes(pdf_bytes),
+            mimetype="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except ImportError:
+        flash("PDF export requires fpdf2. Run: pip install fpdf2", "danger")
+        return redirect(url_for("main.manage_assets", map_id=map_id))
 
 
 @bp.route("/quick-tips")

@@ -29,22 +29,31 @@
     </div>
     <div class="panel-body">
       <form id="quick-asset-form">
-        <input 
-          type="text" 
-          id="quick-asset-name" 
-          placeholder="Location name (e.g., Kitchen)" 
-          required 
+        <input
+          type="text"
+          id="quick-asset-name"
+          placeholder="Location name (e.g., Kitchen)"
+          required
           autocomplete="off"
         >
-        <input 
-          type="text" 
-          id="quick-asset-category" 
-          placeholder="Category (e.g., Room)" 
+        <input
+          type="text"
+          id="quick-asset-category"
+          placeholder="Category (e.g., Room)"
           autocomplete="off"
         >
         <button type="submit" id="quick-asset-btn" class="btn primary">✓ Save Location</button>
       </form>
       <div id="quick-asset-status" style="margin-top: 0.5rem;"></div>
+      <hr style="border:none; border-top:1px solid var(--border); margin: 0.6rem 0;">
+      <button
+        type="button"
+        id="auto-tag-btn"
+        class="btn secondary"
+        style="width:100%; font-size:0.8rem;"
+        title="Automatically navigate every sweep and tag locations using AI vision"
+      >🤖 Auto-Tag All Locations</button>
+      <div id="auto-tag-status" style="margin-top:0.4rem; font-size:0.78rem; color:var(--text-muted);"></div>
     </div>
   </div>
 
@@ -96,6 +105,23 @@
         <span style="color: var(--text-muted); font-size: 0.8rem;">🔄 Connecting...</span>
       </div>
       
+      <!-- Scan Mode Picker (shown when Scan Area button is clicked) -->
+      <div id="scan-mode-picker" class="scan-review-panel" style="display:none;">
+        <div class="scan-review-title">📷 Scan Area</div>
+        <div class="scan-review-instructions">Choose what to scan:</div>
+        <button type="button" id="scan-current-btn" class="btn secondary small" style="width:100%; margin-bottom:0.5rem;">
+          📍 Current Sweep Only
+        </button>
+        <div style="text-align:center; font-size:0.75rem; color:var(--text-muted); margin:0.35rem 0;">— or scan a tagged area —</div>
+        <select id="scan-category-select" style="width:100%; margin-bottom:0.5rem;">
+          <option value="">Select area to scan…</option>
+        </select>
+        <button type="button" id="scan-whole-area-btn" class="btn secondary small" style="width:100%; margin-bottom:0.5rem;">
+          🔍 Scan Whole Area
+        </button>
+        <button type="button" id="scan-mode-cancel-btn" class="btn ghost small" style="width:100%;">✕ Cancel</button>
+      </div>
+
       <div id="scan-review-panel" class="scan-review-panel" style="display: none;">
         <div class="scan-review-title">Scan Results (Current Sweep)</div>
         <div class="scan-review-instructions">✓ Check items to add to this location:</div>
@@ -143,9 +169,27 @@
       </form>
 
       <footer class="chat-footer">
-        <a href="{{ url_for('main.manage_assets', map_id=space.map_id) }}" title="Manage locations">📍 Assets</a>
+        <button type="button" id="assets-panel-open" class="btn ghost small" title="View assets dashboard" style="font-size:0.8rem; padding:0.3rem 0.6rem;">📍 Assets</button>
         <a href="{{ url_for('main.dashboard') }}" title="Dashboard">← Dashboard</a>
       </footer>
+    </div>
+  </aside>
+
+  <!-- In-viewer Assets Panel -->
+  <aside id="assets-panel" class="assets-panel" style="display:none;" aria-label="Assets dashboard">
+    <header class="assets-panel-header">
+      <div style="display:flex; align-items:center; gap:8px;">
+        <strong style="font-size:0.95rem;">📍 Assets</strong>
+      </div>
+      <div style="display:flex; gap:6px; align-items:center;">
+        <a href="{{ url_for('main.export_csv', map_id=space.map_id) }}" target="_blank" class="btn ghost small" title="Download CSV">⬇️ CSV</a>
+        <a href="{{ url_for('main.export_pdf', map_id=space.map_id) }}" target="_blank" class="btn ghost small" title="Download PDF">📄 PDF</a>
+        <a href="{{ url_for('main.manage_assets', map_id=space.map_id) }}" target="_blank" class="btn ghost small" title="Open full page">↗ Full</a>
+        <button type="button" id="assets-panel-close" class="toggle-btn" title="Close panel" style="font-size:1rem; line-height:1;">✕</button>
+      </div>
+    </header>
+    <div id="assets-panel-body" class="assets-panel-body">
+      <div style="padding:1rem; color:var(--text-muted); font-size:0.85rem; text-align:center;">Loading…</div>
     </div>
   </aside>
 </div>

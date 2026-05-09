@@ -9,6 +9,8 @@
   </div>
   <div class="page-header-actions">
     <a href="{{ url_for('main.viewer', map_id=space.map_id) }}" class="btn secondary">👁️ Open Viewer</a>
+    <a href="{{ url_for('main.export_csv', map_id=space.map_id) }}" class="btn ghost" title="Download inventory as CSV">⬇️ CSV</a>
+    <a href="{{ url_for('main.export_pdf', map_id=space.map_id) }}" class="btn ghost" title="Download inventory as PDF">📄 PDF</a>
     <a href="{{ url_for('main.dashboard') }}" class="btn ghost">← Dashboard</a>
   </div>
 </div>

@@ -193,6 +193,58 @@ def vla():
 
     intent = routed.get("intent", "conversational")
 
+    if intent == "react_query":
+        react_spec = groq_service.parse_react_request(message)
+        target_asset = react_spec.get("asset", "chair")
+        min_count = react_spec.get("min_count", 1)
+        reasoning = react_spec.get("reasoning", f"Looking for rooms with ≥ {min_count} {target_asset}s")
+
+        # Query DB for rooms with enough of the target asset
+        summaries = AssetsSummary.query.filter(
+            AssetsSummary.map_id == map_id,
+            AssetsSummary.asset_name == target_asset,
+        ).all()
+        candidates = [s for s in summaries if s.count >= min_count]
+
+        if not candidates:
+            # Partial name match fallback
+            summaries = AssetsSummary.query.filter(
+                AssetsSummary.map_id == map_id,
+                AssetsSummary.asset_name.like(f"%{target_asset}%"),
+            ).all()
+            candidates = [s for s in summaries if s.count >= min_count]
+
+        if not candidates:
+            reply = (
+                f"I reasoned that you need ≥ {min_count} {target_asset}(s), "
+                f"but no scanned rooms meet that requirement. "
+                f"Try scanning rooms first using the Scan Area button."
+            )
+            _log_chat(uid, map_id, message, reply)
+            return jsonify({"ok": True, "intent": "react_query", "reasoning": reasoning,
+                            "candidates": [], "response": reply})
+
+        candidate_list = []
+        for summary in candidates:
+            asset_tag = Asset.query.filter_by(map_id=map_id, label_name=summary.area_name).first()
+            candidate_list.append({
+                "label": summary.area_name,
+                "sweep_uuid": asset_tag.sweep_uuid if asset_tag else None,
+                "target_asset": target_asset,
+                "recorded_count": summary.count,
+            })
+
+        _log_chat(uid, map_id, message,
+                  f"[ReAct] {reasoning} — found {len(candidate_list)} candidate(s)")
+        return jsonify({
+            "ok": True,
+            "intent": "react_query",
+            "reasoning": reasoning,
+            "target_asset": target_asset,
+            "min_count": min_count,
+            "candidates": candidate_list,
+        })
+
     if intent == "query_assets":
         # User is asking about assets in a specific room/area
         query_area = routed.get("query_area")
@@ -363,7 +415,7 @@ def mark_asset():
     asset_name = (data.get("asset_name") or "").strip()
     sweep_uuid = (data.get("sweep_uuid") or "").strip()
     description = (data.get("description") or "").strip()
-    category = (data.get("category") or "").strip()
+    category = (data.get("category") or data.get("asset_category") or "").strip()
 
     if not asset_name:
         return jsonify({"ok": False, "error": "asset_name is required"}), 400
@@ -692,4 +744,148 @@ def edit_asset(map_id, asset_id):
             "category": asset.category,
         },
     })
+
+
+@bp.route("/suggest-location-name", methods=["POST"])
+@api_login_required
+def suggest_location_name():
+    """Suggest a room/area name from a screenshot or detected objects list."""
+    uid = session["user_id"]
+    data = request.get_json(silent=True) or {}
+    map_id = data.get("map_id")
+    image_b64 = (data.get("image_base64") or "").strip()
+    detected_objects = data.get("detected_objects") or {}
+
+    try:
+        map_id = int(map_id)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "map_id is required"}), 400
+
+    space = MatterportSpace.query.filter_by(map_id=map_id, user_id=uid).first()
+    if not space:
+        return jsonify({"ok": False, "error": "Space not found"}), 404
+
+    suggested_name = None
+    if image_b64:
+        suggested_name = groq_service.suggest_location_name_from_image(image_b64)
+    elif detected_objects:
+        suggested_name = groq_service.suggest_location_name_from_objects(detected_objects)
+
+    return jsonify({"ok": True, "suggested_name": suggested_name})
+
+
+@bp.route("/react-verify", methods=["POST"])
+@api_login_required
+def react_verify():
+    """Verify the current state of a candidate room using vision."""
+    uid = session["user_id"]
+    data = request.get_json(silent=True) or {}
+    map_id = data.get("map_id")
+    label = (data.get("label") or "").strip()
+    target_asset = (data.get("target_asset") or "chair").strip().lower()
+    recorded_count = data.get("recorded_count", 0)
+    image_b64 = (data.get("image_base64") or "").strip()
+
+    try:
+        map_id = int(map_id)
+        recorded_count = int(recorded_count)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "map_id and recorded_count must be integers"}), 400
+
+    space = MatterportSpace.query.filter_by(map_id=map_id, user_id=uid).first()
+    if not space:
+        return jsonify({"ok": False, "error": "Space not found"}), 404
+
+    counts = _detect_objects_with_vision(image_b64, label) if image_b64 else {}
+    verified_count = counts.get(target_asset, 0)
+
+    if verified_count == 0:
+        status = "empty"
+        note = f"No {target_asset}s currently visible in {label}"
+    elif recorded_count > 0 and verified_count < recorded_count * 0.7:
+        status = "degraded"
+        note = f"{label}: only {verified_count} {target_asset}(s) visible (recorded: {recorded_count})"
+    else:
+        status = "ok"
+        note = f"{label}: {verified_count} {target_asset}(s) confirmed"
+
+    current_app.logger.info(f"[ReAct Verify] {label}: {verified_count} {target_asset}s ({status})")
+    return jsonify({
+        "ok": True,
+        "label": label,
+        "verified_count": verified_count,
+        "status": status,
+        "note": note,
+    })
+
+
+@bp.route("/spaces/<int:map_id>/assets-panel", methods=["GET"])
+@api_login_required
+def assets_panel_data(map_id):
+    """Return tagged assets + scan summaries for the in-viewer assets panel."""
+    uid = session["user_id"]
+    space = MatterportSpace.query.filter_by(map_id=map_id, user_id=uid).first()
+    if not space:
+        return jsonify({"ok": False, "error": "Not found"}), 404
+
+    assets = Asset.query.filter_by(map_id=map_id).all()
+    summaries = (
+        AssetsSummary.query.filter_by(map_id=map_id)
+        .order_by(AssetsSummary.area_name.asc(), AssetsSummary.asset_name.asc())
+        .all()
+    )
+    return jsonify({
+        "ok": True,
+        "assets": [
+            {
+                "asset_id": a.asset_id,
+                "label_name": a.label_name,
+                "sweep_uuid": a.sweep_uuid,
+                "category": a.category,
+                "description": a.description,
+            }
+            for a in assets
+        ],
+        "scan_summaries": [
+            {
+                "id": s.id,
+                "area_name": s.area_name or "Unspecified",
+                "asset_name": s.asset_name,
+                "count": s.count,
+            }
+            for s in summaries
+        ],
+    })
+
+
+@bp.route("/spaces/<int:map_id>/assets/<int:asset_id>", methods=["DELETE"])
+@api_login_required
+def delete_asset_api(map_id, asset_id):
+    """Delete a tagged navigation asset via API."""
+    uid = session["user_id"]
+    space = MatterportSpace.query.filter_by(map_id=map_id, user_id=uid).first()
+    if not space:
+        return jsonify({"ok": False, "error": "Not found"}), 404
+    asset = Asset.query.filter_by(asset_id=asset_id, map_id=map_id).first()
+    if not asset:
+        return jsonify({"ok": False, "error": "Asset not found"}), 404
+    db.session.delete(asset)
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+@bp.route("/spaces/<int:map_id>/scanned-assets/<int:summary_id>", methods=["DELETE"])
+@api_login_required
+def delete_scanned_asset_api(map_id, summary_id):
+    """Delete a scanned asset summary row via API."""
+    uid = session["user_id"]
+    space = MatterportSpace.query.filter_by(map_id=map_id, user_id=uid).first()
+    if not space:
+        return jsonify({"ok": False, "error": "Not found"}), 404
+    row = AssetsSummary.query.filter_by(id=summary_id, map_id=map_id).first()
+    if not row:
+        return jsonify({"ok": False, "error": "Not found"}), 404
+    db.session.delete(row)
+    db.session.commit()
+    return jsonify({"ok": True})
 

@@ -30,6 +30,7 @@ def route_intent(user_message: str, asset_labels: list[str], last_queried_area: 
         f"Available navigation labels (exact strings users may want to visit): {labels_text}\n\n"
         f"{context_instruction}"
         "Classify the user message into exactly one intent:\n"
+        "- react_query: user has a complex multi-step planning request requiring room suitability verification (e.g. 'I need a meeting room for 10 people', 'find a room that fits 15 people', 'which room has enough chairs for a seminar', 'I need to host a dinner for 8 people', 'set up a conference for 20 attendees').\n"
         "- query_assets: user asks about what assets/items are in a specific room or area (e.g. 'what are the assets in bedroom 1', 'how many closets are in bedroom 1', 'what furniture is in the kitchen', 'list items in living room').\n"
         "- navigate: user wants to go to a place, room, or tagged sweep (e.g. 'take me to the kitchen', 'go to bedroom').\n"
         "- visual: user asks about what is visible in the current view, colors, objects, 'what do you see', 'is there a chair', 'describe this view'.\n"
@@ -37,8 +38,9 @@ def route_intent(user_message: str, asset_labels: list[str], last_queried_area: 
         "- activity: user wants to do an activity that requires going to a specific location (e.g. 'I want to cook', 'I want to sleep', 'I need to work').\n"
         "- conversational: greetings, small talk, general questions not about the current view or moving in the space.\n\n"
         "Respond with ONLY valid JSON (no markdown fences):\n"
-        '{"intent":"navigate"|"visual"|"mark_asset"|"activity"|"conversational"|"query_assets","destination_label":string or null,"asset_name":string or null,"query_area":string or null,"reply":string or null}\n'
+        '{"intent":"navigate"|"visual"|"mark_asset"|"activity"|"conversational"|"query_assets"|"react_query","destination_label":string or null,"asset_name":string or null,"query_area":string or null,"reply":string or null}\n'
         "Rules:\n"
+        "- For react_query: set all other fields to null. This triggers multi-step agentic reasoning.\n"
         "- For query_assets: extract the room/area name and put it in query_area. If no room is mentioned, use the MEMORY CONTEXT area. Set destination_label and asset_name to null.\n"
         "- For navigate: set destination_label to the best matching label from the list (case-insensitive match). "
         "If the list is empty or no reasonable match, set intent to conversational and reply explaining they need to add tagged destinations first.\n"
@@ -60,7 +62,7 @@ def route_intent(user_message: str, asset_labels: list[str], last_queried_area: 
                     "properties": {
                         "intent": {
                             "type": "string",
-                            "enum": ["navigate", "visual", "mark_asset", "activity", "conversational", "query_assets"],
+                            "enum": ["navigate", "visual", "mark_asset", "activity", "conversational", "query_assets", "react_query"],
                         },
                         "destination_label": {
                             "anyOf": [{"type": "string"}, {"type": "null"}],
@@ -204,7 +206,7 @@ def _parse_router_json(text: str) -> dict:
             "reply": "I could not parse the routing response. Please try rephrasing.",
         }
     intent = data.get("intent", "conversational")
-    if intent not in ("navigate", "visual", "conversational", "mark_asset", "activity", "query_assets"):
+    if intent not in ("navigate", "visual", "conversational", "mark_asset", "activity", "query_assets", "react_query"):
         intent = "conversational"
     return {
         "intent": intent,
@@ -279,3 +281,93 @@ def detect_objects_from_image(image_b64: str, area_context: str | None = None) -
     except Exception as e:
         current_app.logger.exception(f"[Groq Vision] Detection failed: {e}")
         return {}
+
+
+def suggest_location_name_from_image(image_b64: str) -> str | None:
+    """Use vision model to suggest a room/area name from a 360° screenshot."""
+    if not image_b64:
+        return None
+    if "," in image_b64:
+        image_b64 = image_b64.split(",", 1)[1]
+
+    prompt = (
+        "Look at this image from a 3D space. Identify what type of room or area this is. "
+        "Reply with ONLY the room name — nothing else. "
+        "Examples: Kitchen, Bedroom 1, Living Room, Office, Bathroom, Conference Room, Hallway, Dining Room. "
+        "If multiple rooms are plausible, pick the most specific one. No explanations."
+    )
+    try:
+        completion = _client().chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+                    {"type": "text", "text": prompt},
+                ],
+            }],
+            max_tokens=30,
+            temperature=0.2,
+        )
+        name = (completion.choices[0].message.content or "").strip()
+        name = name.split("\n")[0].strip("\"'").strip()
+        return name if name else None
+    except Exception as e:
+        current_app.logger.exception(f"[Groq Vision] suggest_location_name_from_image failed: {e}")
+        return None
+
+
+def suggest_location_name_from_objects(detected_objects: dict) -> str | None:
+    """Infer a room/area name from a dict of detected objects using the LLM."""
+    if not detected_objects:
+        return None
+    objects_str = ", ".join(f"{count} {name}" for name, count in detected_objects.items())
+    prompt = (
+        f"A room contains: {objects_str}.\n"
+        "What is the most likely room type? Reply with ONLY the room name — no explanation. "
+        "Examples: Kitchen, Bedroom, Living Room, Office, Bathroom, Conference Room, Dining Room."
+    )
+    model = current_app.config.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+    try:
+        completion = _client().chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=20,
+        )
+        name = (completion.choices[0].message.content or "").strip()
+        name = name.split("\n")[0].strip("\"'").strip()
+        return name if name else None
+    except Exception as e:
+        current_app.logger.exception(f"[Groq] suggest_location_name_from_objects failed: {e}")
+        return None
+
+
+def parse_react_request(user_message: str) -> dict:
+    """Extract asset type and minimum count needed from a complex planning request."""
+    prompt = (
+        "The user is making a planning request about a physical space. "
+        "Extract: (1) the asset/furniture type they need, (2) the minimum quantity required. "
+        'Respond ONLY with valid JSON, no markdown: {"asset": "chair", "min_count": 10, "reasoning": "Meeting for 10 people requires 10 chairs"}\n'
+        f"User request: {user_message}"
+    )
+    model = current_app.config.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+    try:
+        completion = _client().chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=150,
+        )
+        text = (completion.choices[0].message.content or "").strip()
+        m = re.search(r"\{[\s\S]*\}", text)
+        if m:
+            parsed = json.loads(m.group(0))
+            return {
+                "asset": str(parsed.get("asset", "chair")).lower().strip(),
+                "min_count": max(1, int(parsed.get("min_count", 1))),
+                "reasoning": str(parsed.get("reasoning", "Looking for suitable space")),
+            }
+    except Exception as e:
+        current_app.logger.exception(f"[Groq] parse_react_request failed: {e}")
+    return {"asset": "chair", "min_count": 1, "reasoning": "Looking for a suitable room"}
