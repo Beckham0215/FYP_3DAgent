@@ -18,6 +18,19 @@
       {% set stats = space_stats.get(s.map_id, {}) %}
       <div class="space-card">
 
+        <!-- Space thumbnail from Matterport CDN -->
+        <div class="space-card-thumb">
+          <img
+            src="https://my.matterport.com/api/v1/player/models/{{ s.matterport_sid }}/thumb"
+            alt="{{ s.map_name }}"
+            loading="lazy"
+            onerror="this.style.display='none'; this.parentElement.classList.add('space-card-thumb--fallback'); this.parentElement.querySelector('.space-card-thumb-label').style.display='flex';"
+          >
+          <div class="space-card-thumb-label" style="display:none;">
+            <span>{{ s.map_name[0] | upper }}</span>
+          </div>
+        </div>
+
         <div class="space-card-header">
           <div>
             <h3 class="space-card-name">{{ s.map_name }}</h3>
