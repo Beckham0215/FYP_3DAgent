@@ -326,16 +326,9 @@
     if (!scanHighlightOverlay) return;
 
     if (shoLabelEl) {
-      if (bbox && bbox.length === 4) {
-        // Derive a human-readable zone label from the bbox boundaries
-        const cx = (bbox[0] + bbox[2]) / 2;
-        const cy = (bbox[1] + bbox[3]) / 2;
-        const col = cx < 0.38 ? "left" : cx > 0.62 ? "right" : "center";
-        const row = cy < 0.38 ? "top"  : cy > 0.62 ? "bottom" : "middle";
-        shoLabelEl.textContent = `📍 ${objectName} — look ${col} ${row}`;
-      } else {
-        shoLabelEl.textContent = `📍 ${objectName} — camera positioned at best view`;
-      }
+      shoLabelEl.textContent = bbox && bbox.length === 4
+        ? `🔆 ${objectName} — highlighted`
+        : `🔆 ${objectName} — camera at best view`;
     }
 
     if (shoMarkerEl) {
@@ -593,23 +586,17 @@
           const assetName = this.dataset.asset;
           if (!pendingScanViewData.length) return;
 
-          // Find the view with the highest count AND a valid stored bbox for this asset.
-          // Prefer a view that has both; fall back to highest count only.
+          // Find the view where this asset was detected most often
           let bestView = pendingScanViewData[0];
           let bestCount = 0;
           pendingScanViewData.forEach((view) => {
             const c = view.objects[assetName] || 0;
-            const hasBbox = !!(view.bboxes && view.bboxes[assetName]);
-            const prevHasBbox = !!(bestView.bboxes && bestView.bboxes[assetName]);
-            // Prefer: more detections; break ties by having a bbox
-            if (c > bestCount || (c === bestCount && hasBbox && !prevHasBbox)) {
-              bestCount = c; bestView = view;
-            }
+            if (c > bestCount) { bestCount = c; bestView = view; }
           });
 
-          // Show overlay immediately so the user gets instant feedback
+          // Show "searching" state immediately
           clearHighlightOverlay();
-          if (shoLabelEl) shoLabelEl.textContent = `📍 ${assetName} — rotating to best view…`;
+          if (shoLabelEl) shoLabelEl.textContent = `🔍 ${assetName} — rotating to best view…`;
           if (scanHighlightOverlay) scanHighlightOverlay.style.display = "block";
 
           // Rotate camera to the best angle
@@ -618,9 +605,24 @@
             await rotateToYawAtCurrentSweep(yaw, pendingScanBaseRotation.x || 0);
           } catch (_) {}
 
-          // Use the pre-computed bbox from scan time — no extra API call needed
-          const bbox = (bestView.bboxes && bestView.bboxes[assetName]) || null;
-          showHighlightOverlay(assetName, bbox);
+          // Update label while fetching precise bbox
+          if (shoLabelEl) shoLabelEl.textContent = `🔍 ${assetName} — locating…`;
+
+          // Capture a fresh screenshot at the rotated angle and get a tight
+          // per-object bounding box from the vision model via /api/locate-object.
+          try {
+            const freshImg = await captureViewportBase64();
+            const locRes = await fetch("/api/locate-object", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "same-origin",
+              body: JSON.stringify({ map_id: mapId, object_name: assetName, image_base64: freshImg }),
+            });
+            const locData = await locRes.json().catch(() => ({}));
+            showHighlightOverlay(assetName, (locData.ok && locData.bbox) ? locData.bbox : null);
+          } catch (_) {
+            showHighlightOverlay(assetName, null);
+          }
         });
       });
     }

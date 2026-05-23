@@ -13,9 +13,6 @@ from app.services import blip_service, groq_service
 
 bp = Blueprint("api", __name__, url_prefix="/api")
 
-ALLOWED_SCAN_OBJECTS = {"chair", "table", "tv", "sofa", "desk", "bed", "lamp", "plant", "closet"}
-
-
 def api_login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):

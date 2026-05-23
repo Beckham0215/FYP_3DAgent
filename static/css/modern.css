@@ -2426,26 +2426,61 @@ label {
   pointer-events: none;
 }
 
-/* Zone highlight — left/top/width/height injected by JS, no transform offset */
+/* Tight-edge highlighter — left/top/width/height injected by JS from vision model bbox */
 .sho-marker {
   position: absolute;
   /* width/height/left/top set entirely by JS — do NOT add transform or fixed size here */
-  border: 2.5px dashed var(--accent-primary);
-  border-radius: 8px;
-  background: rgba(16, 163, 127, 0.07);
-  box-shadow: inset 0 0 20px rgba(16, 163, 127, 0.10), 0 0 14px rgba(16, 163, 127, 0.35);
-  animation: sho-marker-pulse 1.6s ease-in-out infinite;
+  border: 3px solid #34d399;
+  border-radius: 4px;
+  background: rgba(52, 211, 153, 0.10);
+  box-shadow:
+    0 0 0 1px rgba(52, 211, 153, 0.35),
+    0 0 18px rgba(52, 211, 153, 0.50),
+    inset 0 0 24px rgba(52, 211, 153, 0.08);
+  animation: sho-highlight-pulse 1.4s ease-in-out infinite;
   pointer-events: none;
 }
 
-@keyframes sho-marker-pulse {
+/* Corner accent marks that hug the object edge */
+.sho-marker::before,
+.sho-marker::after {
+  content: "";
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-color: #6ee7b7;
+  border-style: solid;
+  pointer-events: none;
+}
+
+.sho-marker::before {
+  top: -4px;
+  left: -4px;
+  border-width: 3px 0 0 3px;
+  border-radius: 2px 0 0 0;
+}
+
+.sho-marker::after {
+  bottom: -4px;
+  right: -4px;
+  border-width: 0 3px 3px 0;
+  border-radius: 0 0 2px 0;
+}
+
+@keyframes sho-highlight-pulse {
   0%, 100% {
-    box-shadow: inset 0 0 20px rgba(16, 163, 127, 0.10), 0 0 14px rgba(16, 163, 127, 0.35);
-    border-color: var(--accent-primary);
+    border-color: #34d399;
+    box-shadow:
+      0 0 0 1px rgba(52, 211, 153, 0.35),
+      0 0 18px rgba(52, 211, 153, 0.50),
+      inset 0 0 24px rgba(52, 211, 153, 0.08);
   }
   50% {
-    box-shadow: inset 0 0 30px rgba(16, 163, 127, 0.18), 0 0 24px rgba(52, 211, 153, 0.55);
-    border-color: var(--accent-primary-light, #34d399);
+    border-color: #6ee7b7;
+    box-shadow:
+      0 0 0 3px rgba(52, 211, 153, 0.50),
+      0 0 36px rgba(52, 211, 153, 0.75),
+      inset 0 0 40px rgba(52, 211, 153, 0.16);
   }
 }
 
