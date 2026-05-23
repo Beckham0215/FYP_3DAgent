@@ -261,6 +261,7 @@ def parse_groq_vision_response(text: str) -> dict:
 def detect_objects_from_image(image_b64: str, area_context: str | None = None) -> dict:
     """
     Use Groq vision (Llama 4 Scout) to detect and count objects CLOSE to the camera.
+    Uses the reliable comma-separated text format so the model returns the full object list.
     area_context: optional room name to help the model filter relevant objects.
     """
     if not image_b64:
@@ -277,7 +278,7 @@ def detect_objects_from_image(image_b64: str, area_context: str | None = None) -
         "items in the foreground or middle ground of this specific room. "
         "Do NOT include objects that are far away, blurry, through doorways, "
         "in adjacent rooms, or barely visible. "
-        "List every piece of furniture and object you can clearly see with their counts. "
+        "List EVERY piece of furniture and object you can clearly see with their counts. "
         "Reply ONLY as a comma-separated list in this exact format: "
         "chair: 2, table: 1, sofa: 1, tv: 1, lamp: 2. "
         "No other text, no sentences, just the list. "
@@ -310,6 +311,165 @@ def detect_objects_from_image(image_b64: str, area_context: str | None = None) -
 
     except Exception as e:
         current_app.logger.exception(f"[Groq Vision] Detection failed: {e}")
+        return {}
+
+
+def detect_objects_from_image_with_positions(image_b64: str, area_context: str | None = None) -> dict:
+    """Thin wrapper — scan flow only needs counts; positions fetched on-demand via locate_object_in_image."""
+    counts = detect_objects_from_image(image_b64, area_context)
+    return {"counts": counts, "positions": {}}
+
+
+def locate_object_in_image(image_b64: str, object_name: str) -> list | None:
+    """
+    Ask the vision model for a tight bounding box of one specific object in the image.
+    Returns [x1, y1, x2, y2] normalized 0–1, or None if the object is not visible.
+    Called on-demand when the user clicks an asset name in the review panel.
+    """
+    if not image_b64 or not object_name:
+        return None
+
+    if "," in image_b64:
+        image_b64 = image_b64.split(",", 1)[1]
+
+    prompt = (
+        f"Find the '{object_name}' in this image. "
+        "Output ONLY a JSON array [x1, y1, x2, y2] with four decimal numbers between 0 and 1, "
+        "where (0,0) is the top-left corner and (1,1) is the bottom-right corner of the image. "
+        "The coordinates must be normalized fractions, NOT pixel values. "
+        "Draw a tight box around the object. Example: [0.12, 0.45, 0.55, 0.90]. "
+        f"If '{object_name}' is not clearly visible, reply exactly: null"
+    )
+
+    try:
+        completion = _client().chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ],
+            max_tokens=60,
+            temperature=0.1,
+        )
+        answer = (completion.choices[0].message.content or "").strip()
+        current_app.logger.info(f"[Groq Locate '{object_name}'] Raw: {answer}")
+
+        if answer.lower() in ("null", "none", "not visible", ""):
+            return None
+
+        # Extract [x1, y1, x2, y2] array
+        m = re.search(r'\[\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*\]', answer)
+        if not m:
+            return None
+
+        x1, y1, x2, y2 = [float(m.group(i)) for i in range(1, 5)]
+
+        # Auto-detect coordinate system: model may return 0-1 normalized,
+        # 0-1000 range (Llama visual grounding), or raw pixel coordinates.
+        max_val = max(x1, y1, x2, y2)
+        if max_val > 1.5:
+            if max_val <= 1000:
+                x1, y1, x2, y2 = x1 / 1000, y1 / 1000, x2 / 1000, y2 / 1000
+            else:
+                # Pixel coordinates — screenshot captured at 1280×720
+                x1, x2 = x1 / 1280, x2 / 1280
+                y1, y2 = y1 / 720,  y2 / 720
+
+        x1, x2 = sorted([max(0.0, min(1.0, x1)), max(0.0, min(1.0, x2))])
+        y1, y2 = sorted([max(0.0, min(1.0, y1)), max(0.0, min(1.0, y2))])
+        if (x2 - x1) < 0.01 or (y2 - y1) < 0.01:
+            return None
+
+        bbox = [round(x1, 3), round(y1, 3), round(x2, 3), round(y2, 3)]
+        current_app.logger.info(f"[Groq Locate '{object_name}'] BBox: {bbox}")
+        return bbox
+
+    except Exception as e:
+        current_app.logger.exception(f"[Groq Locate] Failed for '{object_name}': {e}")
+        return None
+
+
+# Zone boundaries — overlapping slightly so the highlighted region doesn't feel
+# like it's cut off at the edge of a zone.
+_COL_ZONES = {
+    "left":   (0.0,  0.38),
+    "center": (0.31, 0.69),
+    "right":  (0.62, 1.0),
+}
+_ROW_ZONES = {
+    "top":    (0.0,  0.40),
+    "middle": (0.30, 0.70),
+    "bottom": (0.60, 1.0),
+}
+
+
+def locate_all_objects_in_image(image_b64: str, object_names: list) -> dict:
+    """
+    Locate multiple objects using a 3×3 zone grid description rather than pixel
+    coordinates.  Zone descriptions ("right bottom") are far more reliable for
+    general vision LLMs than predicting exact bounding-box numbers.
+    Returns {name: [x1, y1, x2, y2]} as zone boundary fractions (0-1).
+    Called during scan so zones are pre-computed and highlight feedback is instant.
+    """
+    if not image_b64 or not object_names:
+        return {}
+
+    if "," in image_b64:
+        image_b64 = image_b64.split(",", 1)[1]
+
+    names_str = ", ".join(list(object_names)[:15])
+    prompt = (
+        "For each visible object listed below, output its position on a new line as:\n"
+        "name: COLUMN ROW\n"
+        "COLUMN must be one of: left, center, right  (horizontal thirds of the image)\n"
+        "ROW must be one of: top, middle, bottom  (vertical thirds of the image)\n"
+        "Example:  chair: right bottom\n"
+        "Skip objects that are not clearly visible. Output ONLY these lines, nothing else.\n"
+        f"Objects: {names_str}"
+    )
+
+    try:
+        completion = _client().chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+                    {"type": "text", "text": prompt},
+                ],
+            }],
+            max_tokens=150,
+            temperature=0.1,
+        )
+        answer = (completion.choices[0].message.content or "").strip()
+        current_app.logger.info(f"[Groq LocateZones] Raw: {answer}")
+
+        pattern = re.compile(
+            r'([\w][\w\s/\-]*):\s*(left|center|right)\s+(top|middle|bottom)',
+            re.IGNORECASE,
+        )
+        result = {}
+        for m in pattern.finditer(answer):
+            name = m.group(1).strip().lower()
+            col  = m.group(2).lower()
+            row  = m.group(3).lower()
+            x1, x2 = _COL_ZONES.get(col, (0.2, 0.8))
+            y1, y2 = _ROW_ZONES.get(row, (0.2, 0.8))
+            result[name] = [x1, y1, x2, y2]
+
+        current_app.logger.info(f"[Groq LocateZones] Parsed: {result}")
+        return result
+
+    except Exception as e:
+        current_app.logger.exception(f"[Groq LocateZones] Failed: {e}")
         return {}
 
 

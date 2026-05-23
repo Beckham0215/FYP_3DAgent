@@ -10,6 +10,22 @@
     title="Matterport 3D viewer"
   ></iframe>
 
+  <!-- Live Scan Overlay (Feature 1) — floating chip, centered over viewport -->
+  <div id="scan-live-overlay" style="display:none;">
+    <div class="slo-status">
+      <span class="slo-dot"></span>
+      <span id="slo-angle-label"></span>
+    </div>
+    <div id="slo-badges" class="slo-badges"></div>
+  </div>
+
+  <!-- Highlight Overlay (Feature 2) — positioned marker at detected object location -->
+  <div id="scan-highlight-overlay" style="display:none;">
+    <div class="sho-marker" id="sho-marker" style="display:none;"></div>
+    <div class="sho-label" id="sho-label"></div>
+    <button type="button" class="sho-dismiss" id="sho-dismiss">&#xd7; Exit highlight</button>
+  </div>
+
   <!-- Location Tracker Panel -->
   <div id="uuid-tracker" class="hud-panel">
     <div class="panel-header">

@@ -36,6 +36,8 @@
   let pendingScanSweepUuid = null; // sweep where current scan was initiated
   let scanResultTags = {};         // sweepUuid → {tagSids, counts, areaName, confirmed}
   let scanTagsVisible = false;
+  let pendingScanViewData = [];    // [{angle, objects, bboxes}] — per-view data for Feature 2
+  let pendingScanBaseRotation = { x: 0, y: 0 }; // base rotation at scan start (Feature 2)
   const chatHistory = []; // [{role:"user"|"assistant", content}] — last 10 msgs
 
   // Minimap state
@@ -207,11 +209,14 @@
     }
 
     try {
-      // Try to take a regular screenshot first
-      const resolution = { width: 1280, height: 720 };
+      // Match screenshot resolution to the actual viewer size so that
+      // normalized bbox coordinates from the vision model map correctly.
+      const W = iframe.offsetWidth  || 1280;
+      const H = iframe.offsetHeight || 720;
+      const resolution = { width: W, height: H };
       const visibility = { measurements: true, mattertags: true, sweeps: true, views: true };
-      
-      console.log("[3DAgent] Capturing screenshot...");
+
+      console.log(`[3DAgent] Capturing screenshot at ${W}x${H}…`);
       let imgStr = await sdk.Renderer.takeScreenShot(resolution, visibility);
 
       if (!imgStr || imgStr.length < 1000) {
@@ -269,6 +274,101 @@
 
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  // ── Feature 1: Live Scan Overlay helpers ──────────────────────────────────
+
+  const scanLiveOverlay  = document.getElementById("scan-live-overlay");
+  const sloAngleLabel    = document.getElementById("slo-angle-label");
+  const sloBadgesEl      = document.getElementById("slo-badges");
+
+  function showLiveOverlay(viewIndex, totalViews, angleDeg, detectedObjects) {
+    if (!scanLiveOverlay) return;
+    if (sloAngleLabel) {
+      sloAngleLabel.textContent = `View ${viewIndex}/${totalViews} — ${angleDeg}°`;
+    }
+    if (sloBadgesEl) {
+      sloBadgesEl.innerHTML = "";
+      const entries = Object.entries(detectedObjects || {})
+        .filter(([, c]) => c > 0)
+        .sort((a, b) => b[1] - a[1]);
+      entries.forEach(([name, count], idx) => {
+        const badge = document.createElement("span");
+        badge.className = "slo-badge";
+        badge.style.animationDelay = (idx * 60) + "ms";
+        badge.innerHTML = `<span class="slo-badge-name">${name}</span><span class="slo-badge-count">×${count}</span>`;
+        sloBadgesEl.appendChild(badge);
+      });
+    }
+    scanLiveOverlay.style.display = "block";
+  }
+
+  function clearLiveOverlay() {
+    if (!scanLiveOverlay) return;
+    scanLiveOverlay.style.display = "none";
+    if (sloBadgesEl) sloBadgesEl.innerHTML = "";
+  }
+
+  // ── Feature 2: Scan Highlight Overlay helpers ─────────────────────────────
+
+  const scanHighlightOverlay = document.getElementById("scan-highlight-overlay");
+  const shoLabelEl           = document.getElementById("sho-label");
+  const shoMarkerEl          = document.getElementById("sho-marker");
+  const shoDismissBtn        = document.getElementById("sho-dismiss");
+
+  if (shoDismissBtn) {
+    shoDismissBtn.addEventListener("click", clearHighlightOverlay);
+  }
+
+  // bbox is [x1,y1,x2,y2] normalized 0–1 zone boundaries from the vision model.
+  // If null/invalid, shows label only so the user knows the camera view is correct.
+  function showHighlightOverlay(objectName, bbox) {
+    if (!scanHighlightOverlay) return;
+
+    if (shoLabelEl) {
+      if (bbox && bbox.length === 4) {
+        // Derive a human-readable zone label from the bbox boundaries
+        const cx = (bbox[0] + bbox[2]) / 2;
+        const cy = (bbox[1] + bbox[3]) / 2;
+        const col = cx < 0.38 ? "left" : cx > 0.62 ? "right" : "center";
+        const row = cy < 0.38 ? "top"  : cy > 0.62 ? "bottom" : "middle";
+        shoLabelEl.textContent = `📍 ${objectName} — look ${col} ${row}`;
+      } else {
+        shoLabelEl.textContent = `📍 ${objectName} — camera positioned at best view`;
+      }
+    }
+
+    if (shoMarkerEl) {
+      if (bbox && bbox.length === 4) {
+        // Position relative to the iframe (the actual 3D viewport)
+        const W = iframe.offsetWidth  || 1280;
+        const H = iframe.offsetHeight || 720;
+
+        const left   = bbox[0] * W;
+        const top    = bbox[1] * H;
+        const width  = (bbox[2] - bbox[0]) * W;
+        const height = (bbox[3] - bbox[1]) * H;
+
+        if (width > 10 && height > 10) {
+          shoMarkerEl.style.left    = left   + "px";
+          shoMarkerEl.style.top     = top    + "px";
+          shoMarkerEl.style.width   = width  + "px";
+          shoMarkerEl.style.height  = height + "px";
+          shoMarkerEl.style.display = "block";
+        } else {
+          shoMarkerEl.style.display = "none";
+        }
+      } else {
+        shoMarkerEl.style.display = "none";
+      }
+    }
+
+    scanHighlightOverlay.style.display = "block";
+  }
+
+  function clearHighlightOverlay() {
+    if (scanHighlightOverlay) scanHighlightOverlay.style.display = "none";
+    if (shoMarkerEl) shoMarkerEl.style.display = "none";
   }
 
   async function postScanAsset(body) {
@@ -405,10 +505,11 @@
       scanReviewList.innerHTML = entries
         .map(([asset, count]) => {
           const numCount = parseInt(count) || count;
+          const hasViewData = pendingScanViewData.length > 0;
           return `
           <div class="scan-review-item" data-asset="${asset}">
             <div class="scan-item-label">
-              <span class="scan-item-name">${asset}</span>
+              <span class="scan-item-name${hasViewData ? " scan-item-clickable" : ""}" data-asset="${asset}">${asset}</span>
               ${counts[asset] && counts[asset].viewsDetected != null
                 ? `<span class="scan-item-confidence">${counts[asset].viewsDetected}/${counts[asset].totalViews || 6} views</span>`
                 : ""}
@@ -484,6 +585,44 @@
           delete selectedScanItems[asset];
         });
       });
+
+      // Feature 2: click asset name → rotate to best view + show pre-computed bbox
+      // Bboxes are computed during scan so there is no extra API call on click.
+      scanReviewList.querySelectorAll(".scan-item-clickable").forEach((nameEl) => {
+        nameEl.addEventListener("click", async function () {
+          const assetName = this.dataset.asset;
+          if (!pendingScanViewData.length) return;
+
+          // Find the view with the highest count AND a valid stored bbox for this asset.
+          // Prefer a view that has both; fall back to highest count only.
+          let bestView = pendingScanViewData[0];
+          let bestCount = 0;
+          pendingScanViewData.forEach((view) => {
+            const c = view.objects[assetName] || 0;
+            const hasBbox = !!(view.bboxes && view.bboxes[assetName]);
+            const prevHasBbox = !!(bestView.bboxes && bestView.bboxes[assetName]);
+            // Prefer: more detections; break ties by having a bbox
+            if (c > bestCount || (c === bestCount && hasBbox && !prevHasBbox)) {
+              bestCount = c; bestView = view;
+            }
+          });
+
+          // Show overlay immediately so the user gets instant feedback
+          clearHighlightOverlay();
+          if (shoLabelEl) shoLabelEl.textContent = `📍 ${assetName} — rotating to best view…`;
+          if (scanHighlightOverlay) scanHighlightOverlay.style.display = "block";
+
+          // Rotate camera to the best angle
+          const yaw = (pendingScanBaseRotation.y || 0) + bestView.angle;
+          try {
+            await rotateToYawAtCurrentSweep(yaw, pendingScanBaseRotation.x || 0);
+          } catch (_) {}
+
+          // Use the pre-computed bbox from scan time — no extra API call needed
+          const bbox = (bestView.bboxes && bestView.bboxes[assetName]) || null;
+          showHighlightOverlay(assetName, bbox);
+        });
+      });
     }
 
     scanReviewPanel.style.display = "block";
@@ -513,8 +652,10 @@
     scanReviewPanel.style.display = "none";
     pendingScanCounts = null;
     selectedScanItems = {};
+    pendingScanViewData = [];
     if (scanAreaNameInput) scanAreaNameInput.value = "";
     if (scanLocationSelect) scanLocationSelect.value = "";
+    clearHighlightOverlay();
   }
 
   async function loadScanLocations() {
@@ -1045,12 +1186,15 @@
 
     appendLine("system", `📸 Starting 360° scan${areaName ? " of " + areaName : ""}… (6 angles)`);
     const baseRotation = await getCurrentRotation();
+    pendingScanBaseRotation = baseRotation;
     const stepAngles = [0, 60, 120, 180, 240, 300];
     const sightings = {};
+    pendingScanViewData = [];
 
     for (let i = 0; i < stepAngles.length; i++) {
-      if (scanShouldStop) { appendLine("system", "⏹ Scan stopped."); break; }
+      if (scanShouldStop) { appendLine("system", "⏹ Scan stopped."); clearLiveOverlay(); break; }
       const yaw = (baseRotation.y || 0) + stepAngles[i];
+      clearLiveOverlay();
       appendLine("system", `📷 View ${i + 1}/${stepAngles.length}: ${stepAngles[i]}°…`);
       await rotateToYawAtCurrentSweep(yaw, baseRotation.x || 0);
       appendLine("system", `🤖 Analyzing view ${i + 1}/${stepAngles.length}…`);
@@ -1062,8 +1206,15 @@
         area_name: areaName || undefined,
       });
       mergeViewDetections(sightings, scanResult.objects || {});
+      pendingScanViewData.push({
+        angle: stepAngles[i],
+        objects: scanResult.objects || {},
+        bboxes: scanResult.positions || {},
+      });
+      showLiveOverlay(i + 1, stepAngles.length, stepAngles[i], scanResult.objects || {});
     }
 
+    clearLiveOverlay();
     const counts = _buildCounts(sightings, stepAngles.length);
     pendingScanCounts = counts;
     pendingScanSweepUuid = currentSweepUuid;
@@ -1108,9 +1259,11 @@
 
       const sweepLocalSightings = {};
       const baseRotation = await getCurrentRotation();
-      for (const angle of stepAngles) {
+      for (let ai = 0; ai < stepAngles.length; ai++) {
+        const angle = stepAngles[ai];
         if (scanShouldStop) break;
         const yaw = (baseRotation.y || 0) + angle;
+        clearLiveOverlay();
         await rotateToYawAtCurrentSweep(yaw, baseRotation.x || 0);
         const imageBase64 = await captureViewportBase64();
         const scanResult = await postScanAsset({
@@ -1121,6 +1274,12 @@
         });
         mergeViewDetections(aggregatedSightings, scanResult.objects || {});
         mergeViewDetections(sweepLocalSightings, scanResult.objects || {});
+        showLiveOverlay(ai + 1, stepAngles.length, angle, scanResult.objects || {});
+        pendingScanViewData.push({
+          angle: angle,
+          objects: scanResult.objects || {},
+          bboxes: scanResult.positions || {},
+        });
       }
 
       // Update tag with what was found at this specific sweep
@@ -1128,6 +1287,7 @@
       await _placeScanTag(sweep.sweep_uuid, sweep.label_name || category, sweepCounts, false);
     }
 
+    clearLiveOverlay();
     const counts = _buildCounts(aggregatedSightings, sweeps.length * stepAngles.length);
     pendingScanCounts = counts;
     if (scanAreaNameInput) scanAreaNameInput.value = category;
@@ -1342,6 +1502,7 @@
             map_id: mapId,
             area_name: areaName,
             edited_assets: editedCounts,
+            sweep_uuid: pendingScanSweepUuid || currentSweepUuid || "",
           }),
         });
         const data = await res.json().catch(() => ({ ok: false, error: "Invalid response" }));

@@ -67,25 +67,36 @@ def _detect_objects_with_vision(image_b64: str, area_context: str | None = None)
     Primary: Groq vision (proximity-aware, filters out far/adjacent-room objects).
     Fallback: BLIP keyword scan.
     """
+    return _detect_objects_with_vision_and_positions(image_b64, area_context)[0]
+
+
+def _detect_objects_with_vision_and_positions(image_b64: str, area_context: str | None = None) -> tuple:
+    """
+    Returns (counts_dict, positions_dict).
+    positions_dict maps object name → [cx, cy] normalized 0–1 coordinates.
+    Positions are only available when Groq vision is used.
+    """
     if not image_b64:
-        return {}
+        return {}, {}
     try:
         if current_app.config.get("GROQ_API_KEY"):
-            counts = groq_service.detect_objects_from_image(image_b64, area_context)
+            result = groq_service.detect_objects_from_image_with_positions(image_b64, area_context)
+            counts    = result.get("counts", {})
+            positions = result.get("positions", {})
             current_app.logger.info(f"[Vision] Groq vision detected: {counts}")
             if counts:
-                return counts
+                return counts, positions
             current_app.logger.warning("[Vision] Groq vision returned empty, falling back to BLIP")
 
         answer = blip_service.answer_visual_question(
             image_b64, "What furniture and objects are in this room?"
         )
         current_app.logger.info(f"[Vision] BLIP fallback response: {answer}")
-        return _parse_blip_detection_response(answer)
+        return _parse_blip_detection_response(answer), {}
 
     except Exception as e:
         current_app.logger.exception(f"[Vision] Detection failed: {e}")
-        return {}
+        return {}, {}
 
 
 def _parse_blip_detection_response(response: str) -> dict:
@@ -540,21 +551,29 @@ def scan_assets():
         return jsonify({"ok": False, "error": "Space not found"}), 404
 
     try:
-        object_counts = _detect_objects_with_vision(image_b64, area_context)
+        object_counts, _ = _detect_objects_with_vision_and_positions(image_b64, area_context)
     except Exception as e:
         current_app.logger.exception("Scan assets vision detector failed")
         return jsonify({"ok": False, "error": f"Vision detection failed: {e!s}"}), 500
 
-    # Return all detected objects (no hardcoded filtering - allow dynamic detection)
+    # Clean up detected object names/counts
     cleaned_counts = {}
     for name, count in object_counts.items():
         label = (name or "").strip().lower()
-        if not label or count <= 0:
-            continue
-        cleaned_counts[label] = count
-    
-    current_app.logger.info(f"[Scan] Detected {len(cleaned_counts)} unique items: {list(cleaned_counts.keys())}")
-    return jsonify({"ok": True, "objects": cleaned_counts})
+        if label and count > 0:
+            cleaned_counts[label] = count
+
+    # Second pass: locate bboxes for all detected objects in the same image.
+    # Runs after detection so the prompt stays focused and counts stay reliable.
+    positions = {}
+    if cleaned_counts:
+        try:
+            positions = groq_service.locate_all_objects_in_image(image_b64, list(cleaned_counts.keys()))
+        except Exception:
+            current_app.logger.warning("[Scan] locate_all failed — continuing without bboxes")
+
+    current_app.logger.info(f"[Scan] Detected {len(cleaned_counts)} items, located {len(positions)} bboxes")
+    return jsonify({"ok": True, "objects": cleaned_counts, "positions": positions})
 
 
 @bp.route("/scan-assets/summary", methods=["POST"])
@@ -620,6 +639,7 @@ def confirm_edit_scan_assets():
     map_id = data.get("map_id")
     area_name = (data.get("area_name") or "").strip() or None
     edited_counts = data.get("edited_assets") or {}  # User-modified counts
+    sweep_uuid = (data.get("sweep_uuid") or "").strip() or None
 
     try:
         map_id = int(map_id)
@@ -671,8 +691,41 @@ def confirm_edit_scan_assets():
         ))
         db.session.commit()
 
+    # Register the area in the Asset (location) table if it doesn't exist yet.
+    # This ensures newly-typed area names appear in the location dropdown on future scans.
+    if area_name and sweep_uuid:
+        existing_location = Asset.query.filter_by(map_id=map_id, label_name=area_name).first()
+        if not existing_location:
+            db.session.add(Asset(
+                map_id=map_id,
+                label_name=area_name,
+                sweep_uuid=sweep_uuid,
+            ))
+            db.session.commit()
+            current_app.logger.info(f"[Scan] Auto-registered new location '{area_name}' at sweep {sweep_uuid}")
+
     current_app.logger.info(f"[Scan] User confirmed and saved {len(saved_rows)} assets for {area_name}")
     return jsonify({"ok": True, "saved": saved_rows, "message": f"Confirmed {len(saved_rows)} assets for {area_name}"})
+
+
+@bp.route("/locate-object", methods=["POST"])
+@api_login_required
+def locate_object():
+    """Return a tight bounding box [x1,y1,x2,y2] for one named object in a screenshot.
+    Called on-demand after the camera rotates to the best view angle."""
+    data       = request.get_json(silent=True) or {}
+    object_name = (data.get("object_name") or "").strip().lower()
+    image_b64   = data.get("image_base64") or ""
+
+    if not object_name:
+        return jsonify({"ok": False, "error": "object_name required"}), 400
+    if not image_b64:
+        return jsonify({"ok": False, "error": "image_base64 required"}), 400
+    if not current_app.config.get("GROQ_API_KEY"):
+        return jsonify({"ok": True, "bbox": None})
+
+    bbox = groq_service.locate_object_in_image(image_b64, object_name)
+    return jsonify({"ok": True, "bbox": bbox})
 
 
 @bp.route("/scan-assets/locations", methods=["GET"])

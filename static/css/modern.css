@@ -2327,4 +2327,179 @@ label {
     max-height: 70vh;
   }
 }
+
+/* ── Feature 1: Live Scan Overlay — floating chip, centered over viewport ── */
+
+#scan-live-overlay {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(15, 15, 18, 0.88);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid var(--border-hover);
+  border-radius: var(--radius-md);
+  padding: 8px 14px 10px;
+  pointer-events: none;
+  z-index: 20;
+  min-width: 180px;
+  max-width: 460px;
+  text-align: center;
+}
+
+.slo-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.03em;
+  margin-bottom: 7px;
+}
+
+.slo-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-primary);
+  animation: slo-dot-pulse 1.1s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+@keyframes slo-dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.5; transform: scale(0.7); }
+}
+
+#slo-angle-label {
+  color: var(--accent-primary-light);
+}
+
+.slo-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 5px;
+}
+
+.slo-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-hover);
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
+  font-size: 0.75rem;
+  color: var(--text-primary);
+  opacity: 0;
+  animation: slo-badge-in 150ms ease forwards;
+}
+
+.slo-badge-name {
+  text-transform: capitalize;
+  color: var(--text-secondary);
+}
+
+.slo-badge-count {
+  font-weight: 700;
+  color: var(--accent-primary-light);
+  background: rgba(16, 163, 127, 0.15);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+@keyframes slo-badge-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Feature 2: Post-Scan Highlight Overlay — positioned marker at object ── */
+
+#scan-highlight-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 19;
+  pointer-events: none;
+}
+
+/* Zone highlight — left/top/width/height injected by JS, no transform offset */
+.sho-marker {
+  position: absolute;
+  /* width/height/left/top set entirely by JS — do NOT add transform or fixed size here */
+  border: 2.5px dashed var(--accent-primary);
+  border-radius: 8px;
+  background: rgba(16, 163, 127, 0.07);
+  box-shadow: inset 0 0 20px rgba(16, 163, 127, 0.10), 0 0 14px rgba(16, 163, 127, 0.35);
+  animation: sho-marker-pulse 1.6s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes sho-marker-pulse {
+  0%, 100% {
+    box-shadow: inset 0 0 20px rgba(16, 163, 127, 0.10), 0 0 14px rgba(16, 163, 127, 0.35);
+    border-color: var(--accent-primary);
+  }
+  50% {
+    box-shadow: inset 0 0 30px rgba(16, 163, 127, 0.18), 0 0 24px rgba(52, 211, 153, 0.55);
+    border-color: var(--accent-primary-light, #34d399);
+  }
+}
+
+/* Label badge — top-center of the overlay, always readable */
+.sho-label {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(15, 15, 18, 0.90);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  border: 1px solid var(--accent-primary);
+  border-radius: var(--radius-md);
+  padding: 5px 14px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* Dismiss button — bottom-right, interactive */
+.sho-dismiss {
+  position: absolute;
+  bottom: 14px;
+  right: 14px;
+  pointer-events: all;
+  background: rgba(15, 15, 18, 0.88);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  border: 1px solid var(--border-hover);
+  border-radius: var(--radius-sm);
+  padding: 5px 12px;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 150ms, border-color 150ms;
+}
+
+.sho-dismiss:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+/* Clickable asset names in scan review list */
+.scan-item-name.scan-item-clickable {
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  transition: color 120ms;
+}
+
+.scan-item-name.scan-item-clickable:hover {
+  color: var(--accent-primary-light);
+}
 .btn.btn-large  { padding: 0.875rem 1.5rem; font-size: 1rem;   }
