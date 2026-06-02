@@ -16,6 +16,7 @@
     <h2 style="margin-top: 0;">Update Scanned Asset Row</h2>
 
     <form method="post" class="stack-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <label>
         <span>Location</span>
         <input name="area_name" value="{{ row.area_name or '' }}" placeholder="e.g., Living Room" type="text">

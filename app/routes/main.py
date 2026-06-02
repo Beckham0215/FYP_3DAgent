@@ -1,5 +1,6 @@
 import csv
 import io
+from collections import defaultdict
 from datetime import datetime
 import os
 from flask import Blueprint, Response, current_app, flash, redirect, render_template, request, session, url_for
@@ -23,35 +24,42 @@ def index():
 def dashboard():
     uid = session["user_id"]
     spaces = MatterportSpace.query.filter_by(user_id=uid).order_by(MatterportSpace.created_date.desc()).all()
+    if not spaces:
+        return render_template("dashboard.html", spaces=[], space_stats={})
+
+    map_ids = [s.map_id for s in spaces]
+
+    # One query for all assets (tagged locations + categories)
+    all_assets = Asset.query.filter(Asset.map_id.in_(map_ids)).all()
+    assets_by_space = defaultdict(list)
+    for a in all_assets:
+        assets_by_space[a.map_id].append(a)
+
+    # One aggregated query for inventory stats (total items, distinct areas, latest scan)
+    summary_rows = (
+        db.session.query(
+            AssetsSummary.map_id,
+            db.func.sum(AssetsSummary.count).label("total_items"),
+            db.func.count(db.func.distinct(AssetsSummary.area_name)).label("scanned_areas"),
+            db.func.max(AssetsSummary.created_at).label("last_scanned"),
+        )
+        .filter(AssetsSummary.map_id.in_(map_ids))
+        .group_by(AssetsSummary.map_id)
+        .all()
+    )
+    summary_by_space = {r.map_id: r for r in summary_rows}
 
     space_stats = {}
     for space in spaces:
-        assets_all = Asset.query.filter_by(map_id=space.map_id).all()
+        assets_all = assets_by_space.get(space.map_id, [])
         categories = sorted({a.category for a in assets_all if a.category})
-
-        total_items = (
-            db.session.query(db.func.sum(AssetsSummary.count))
-            .filter(AssetsSummary.map_id == space.map_id)
-            .scalar() or 0
-        )
-        scanned_areas = (
-            db.session.query(AssetsSummary.area_name)
-            .filter(AssetsSummary.map_id == space.map_id)
-            .distinct()
-            .count()
-        )
-        latest_scan = (
-            AssetsSummary.query.filter_by(map_id=space.map_id)
-            .order_by(AssetsSummary.created_at.desc())
-            .first()
-        )
-
+        summary = summary_by_space.get(space.map_id)
         space_stats[space.map_id] = {
             "tagged_count": len(assets_all),
             "categories": categories,
-            "total_items": int(total_items),
-            "scanned_areas": scanned_areas,
-            "last_scanned": latest_scan.created_at if latest_scan else None,
+            "total_items": int(summary.total_items or 0) if summary else 0,
+            "scanned_areas": summary.scanned_areas if summary else 0,
+            "last_scanned": summary.last_scanned if summary else None,
         }
 
     return render_template("dashboard.html", spaces=spaces, space_stats=space_stats)

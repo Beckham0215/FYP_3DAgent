@@ -43,6 +43,7 @@
     <p class="muted" style="text-align: center; margin-bottom: var(--spacing-xl); color: var(--text-secondary);">Sign in to your account to continue</p>
     
     <form method="post" class="stack-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <label>
         <span>Username</span>
         <input name="username" required autocomplete="username" placeholder="Enter your username" type="text">

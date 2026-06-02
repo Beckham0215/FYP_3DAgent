@@ -1,7 +1,7 @@
 import json
 import re
 
-from groq import Groq
+from groq import Groq, APIError as GroqAPIError
 
 from flask import current_app
 
@@ -132,7 +132,11 @@ def route_intent(user_message: str, asset_labels: list[str], last_queried_area: 
 
         text = (getattr(msg, "content", "") or "").strip()
         return _parse_router_json(text)
+    except GroqAPIError:
+        raise  # rate limit / auth / network — don't burn a second API call
     except Exception:
+        # Tool-calling format issue (AttributeError, KeyError, JSONDecodeError).
+        # Retry once without tools so the model returns plain JSON text.
         completion = _client().chat.completions.create(
             model=model,
             messages=[
@@ -169,44 +173,6 @@ def chat_reply(user_message: str, context: str | None = None, history: list | No
         max_tokens=512,
     )
     return (completion.choices[0].message.content or "").strip()
-
-
-# Activity-to-location mapping for semantic understanding
-ACTIVITY_LOCATION_MAP = {
-    "cook": "kitchen",
-    "cooking": "kitchen",
-    "prepare food": "kitchen",
-    "eat": "dining room",
-    "eating": "dining room",
-    "dine": "dining room",
-    "have breakfast": "kitchen",
-    "have lunch": "dining room",
-    "have dinner": "dining room",
-    "sleep": "bedroom",
-    "sleeping": "bedroom",
-    "rest": "bedroom",
-    "work": "office",
-    "working": "office",
-    "study": "office",
-    "studying": "office",
-    "read": "office",
-    "reading": "office",
-    "shower": "bathroom",
-    "bathe": "bathroom",
-    "bath": "bathroom",
-    "wash": "bathroom",
-    "watch tv": "living room",
-    "relax": "living room",
-    "sitting": "living room",
-    "socialize": "living room",
-    "entertain": "living room",
-}
-
-
-def get_location_for_activity(activity: str) -> str | None:
-    """Map an activity to a likely location. Returns None if no clear match."""
-    activity_lower = activity.lower().strip()
-    return ACTIVITY_LOCATION_MAP.get(activity_lower)
 
 
 def _parse_router_json(text: str) -> dict:

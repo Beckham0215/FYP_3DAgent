@@ -24,6 +24,11 @@ def _load_model():
             _model.eval()
 
 
+def preload():
+    """Start loading the BLIP model in a background thread at startup."""
+    threading.Thread(target=_load_model, daemon=True, name="blip-preload").start()
+
+
 def answer_visual_question(image_b64: str, question: str) -> str:
     """
     image_b64: raw base64 or data URL (data:image/jpeg;base64,...)

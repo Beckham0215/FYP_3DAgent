@@ -1,5 +1,6 @@
 Flask>=2.3.0
 flask-sqlalchemy>=3.0.0
+flask-wtf>=1.2.0
 python-dotenv>=1.0.0
 groq>=0.4.0
 torch>=2.0.0

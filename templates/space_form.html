@@ -11,6 +11,7 @@
 <div class="page-main">
   <section class="card narrow" style="margin-top: var(--spacing-lg);">
     <form method="post" class="stack-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <label>
         <span>Matterport Space ID (SID)</span>
         <input name="matterport_sid" required placeholder="Found in your Matterport URL: my.matterport.com/show/?m=SID" type="text">

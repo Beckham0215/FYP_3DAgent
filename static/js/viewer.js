@@ -174,17 +174,10 @@
       
       // --- UPDATED SWEEP TRACKING USING OBSERVABLES ---
       try {
-        const sweepDisplayEl = document.getElementById("sweep-display"); // NEW: Get UI element
-
         sdk.Sweep.current.subscribe(function (sweep) {
           if (sweep && sweep.sid) {
             currentSweepUuid = sweep.sid;
-            console.log("[3DAgent] ✓ Current sweep updated via observable:", currentSweepUuid);
-            
-            // NEW: Update the Top-Left HUD
-            if (sweepDisplayEl) {
-              sweepDisplayEl.textContent = currentSweepUuid;
-            }
+            _updateSweepDisplay();
           }
         });
       } catch (e) {
@@ -1455,6 +1448,7 @@
     // Open minimap if closed so the user can see the route
     if (minimapPanel && minimapPanel.style.display === "none") {
       minimapPanel.style.display = "block";
+      _startMinimapLoop();
     }
 
     // Walk the path step by step
@@ -2168,6 +2162,17 @@
     return CATEGORY_COLORS[category.toLowerCase()] || "#10a37f";
   }
 
+  function _updateSweepDisplay() {
+    var el = document.getElementById("sweep-display");
+    if (!el) return;
+    var info = taggedSweepMap[currentSweepUuid];
+    if (info) {
+      el.textContent = info.label_name + (info.category ? " (" + info.category + ")" : "");
+    } else {
+      el.textContent = currentSweepUuid || "Detecting location…";
+    }
+  }
+
   function _buildTaggedSweepMap(assets) {
     taggedSweepMap = {};
     (assets || []).forEach(function (a) {
@@ -2175,6 +2180,7 @@
         taggedSweepMap[a.sweep_uuid] = { label_name: a.label_name, category: a.category };
       }
     });
+    _updateSweepDisplay();
   }
 
   function _getVisibleSweeps() {
@@ -2420,10 +2426,22 @@
     }
   }
 
-  function _animateMinimapLoop() {
-    minimapPulse = (minimapPulse + 0.025) % 1;
-    renderMinimap();
-    requestAnimationFrame(_animateMinimapLoop);
+  var _minimapRafId = null;
+
+  function _startMinimapLoop() {
+    if (_minimapRafId !== null) return;
+    (function loop() {
+      minimapPulse = (minimapPulse + 0.025) % 1;
+      renderMinimap();
+      _minimapRafId = requestAnimationFrame(loop);
+    })();
+  }
+
+  function _stopMinimapLoop() {
+    if (_minimapRafId !== null) {
+      cancelAnimationFrame(_minimapRafId);
+      _minimapRafId = null;
+    }
   }
 
   function _populateFloorSelect(floors) {
@@ -2442,9 +2460,6 @@
 
   async function initMinimap() {
     if (!sdk || !minimapCanvas) return;
-
-    // Start the animation loop immediately so the canvas renders a loading state
-    _animateMinimapLoop();
 
     // Load assets for label overlay
     try {
@@ -2525,7 +2540,13 @@
     minimapOpenBtn.addEventListener("click", function () {
       if (!minimapPanel) return;
       var isOpen = minimapPanel.style.display !== "none";
-      minimapPanel.style.display = isOpen ? "none" : "block";
+      if (isOpen) {
+        minimapPanel.style.display = "none";
+        _stopMinimapLoop();
+      } else {
+        minimapPanel.style.display = "block";
+        _startMinimapLoop();
+      }
     });
   }
 
@@ -2533,6 +2554,7 @@
   if (minimapCloseBtn) {
     minimapCloseBtn.addEventListener("click", function () {
       if (minimapPanel) minimapPanel.style.display = "none";
+      _stopMinimapLoop();
     });
   }
 

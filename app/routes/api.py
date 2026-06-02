@@ -1,7 +1,5 @@
 import json
 import re
-import random
-import hashlib
 from functools import wraps
 
 from flask import Blueprint, current_app, jsonify, request, session
@@ -36,14 +34,13 @@ def _log_chat(user_id: int, map_id: int, prompt: str, response: str):
 
 def _extract_count_from_answer(answer: str) -> int:
     """Extract a number from BLIP's answer.
-    
+
     Handles answers like:
     - "There are 8 chairs"
     - "8 chairs"
     - "There are 8"
     - "8"
     """
-    import re
     if not answer:
         return 0
     
@@ -57,14 +54,6 @@ def _extract_count_from_answer(answer: str) -> int:
         return 0
     
     return 0
-
-
-def _detect_objects_with_vision(image_b64: str, area_context: str | None = None) -> dict:
-    """
-    Primary: Groq vision (proximity-aware, filters out far/adjacent-room objects).
-    Fallback: BLIP keyword scan.
-    """
-    return _detect_objects_with_vision_and_positions(image_b64, area_context)[0]
 
 
 def _detect_objects_with_vision_and_positions(image_b64: str, area_context: str | None = None) -> tuple:
@@ -610,7 +599,7 @@ def save_scan_assets_summary():
             cleaned_count = int(count)
         except (TypeError, ValueError):
             continue
-        if cleaned_count < 0:
+        if cleaned_count <= 0:
             continue
 
         row = AssetsSummary(
@@ -693,8 +682,6 @@ def confirm_edit_scan_assets():
 
         saved_rows.append({"asset_name": cleaned_name, "count": cleaned_count})
 
-    db.session.commit()
-
     # Persist a history snapshot (aggregate counts, not per-instance)
     if saved_rows:
         snapshot_dict = {r["asset_name"]: r["count"] for r in saved_rows}
@@ -703,7 +690,6 @@ def confirm_edit_scan_assets():
             area_name=area_name,
             snapshot=json.dumps(snapshot_dict),
         ))
-        db.session.commit()
 
     # Register the area in the Asset (location) table if it doesn't exist yet.
     # This ensures newly-typed area names appear in the location dropdown on future scans.
@@ -715,8 +701,9 @@ def confirm_edit_scan_assets():
                 label_name=area_name,
                 sweep_uuid=sweep_uuid,
             ))
-            db.session.commit()
             current_app.logger.info(f"[Scan] Auto-registered new location '{area_name}' at sweep {sweep_uuid}")
+
+    db.session.commit()
 
     current_app.logger.info(f"[Scan] User confirmed and saved {len(saved_rows)} assets for {area_name}")
     return jsonify({"ok": True, "saved": saved_rows, "message": f"Confirmed {len(saved_rows)} assets for {area_name}"})
@@ -946,7 +933,7 @@ def react_verify():
     if not space:
         return jsonify({"ok": False, "error": "Space not found"}), 404
 
-    counts = _detect_objects_with_vision(image_b64, label) if image_b64 else {}
+    counts = _detect_objects_with_vision_and_positions(image_b64, label)[0] if image_b64 else {}
     verified_count = counts.get(target_asset, 0)
 
     if verified_count == 0:
@@ -1056,21 +1043,6 @@ def assets_panel_data(map_id):
         ],
     })
 
-
-@bp.route("/spaces/<int:map_id>/assets/<int:asset_id>", methods=["DELETE"])
-@api_login_required
-def delete_asset_api(map_id, asset_id):
-    """Delete a tagged navigation asset via API."""
-    uid = session["user_id"]
-    space = MatterportSpace.query.filter_by(map_id=map_id, user_id=uid).first()
-    if not space:
-        return jsonify({"ok": False, "error": "Not found"}), 404
-    asset = Asset.query.filter_by(asset_id=asset_id, map_id=map_id).first()
-    if not asset:
-        return jsonify({"ok": False, "error": "Asset not found"}), 404
-    db.session.delete(asset)
-    db.session.commit()
-    return jsonify({"ok": True})
 
 
 @bp.route("/spaces/<int:map_id>/scanned-assets/<int:summary_id>", methods=["DELETE"])

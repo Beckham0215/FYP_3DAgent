@@ -33,6 +33,7 @@
 
     <!-- Add Location Form -->
     <form method="post" class="asset-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <label>
         <span>Location Name</span>
         <input name="label_name" required placeholder="e.g., Kitchen, Bedroom 1" type="text">
@@ -78,6 +79,7 @@
                       action="{{ url_for('main.delete_asset', map_id=space.map_id, asset_id=a.asset_id) }}"
                       style="display:inline;"
                       onsubmit="return confirm('Delete \'{{ a.label_name }}\'?');">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <button type="submit" class="btn small danger">🗑️</button>
                 </form>
               </div>
@@ -135,16 +137,29 @@
           <tr>
             <th>🏠 Room</th>
             <th>Detected Object</th>
+            <th style="text-align:center;">#</th>
             <th style="text-align:center;">Count</th>
             <th>Actions</th>
           </tr>
         </thead>
         <tbody id="summary-table-body">
-          {% for row in asset_summaries %}
+          {# Group by area then asset so serial numbers are visually clear #}
+          {% set ns = namespace(prev_area=None, prev_name=None) %}
+          {% for row in asset_summaries | sort(attribute='area_name') %}
             {% set loc = row.area_name or "Unspecified" %}
+            {% set serial = row.serial_number or 1 %}
             <tr class="summary-row" data-location="{{ loc }}">
-              <td><span class="location-badge">{{ loc }}</span></td>
-              <td style="text-transform:capitalize;">{{ row.asset_name }}</td>
+              {# Only repeat area label on first row of a new area #}
+              <td>
+                {% if loc != ns.prev_area %}
+                  <span class="location-badge">{{ loc }}</span>
+                  {% set ns.prev_area = loc %}
+                {% endif %}
+              </td>
+              <td style="text-transform:capitalize;">
+                {{ row.asset_name }}
+              </td>
+              <td style="text-align:center; color:var(--text-muted); font-size:0.82rem;">#{{ serial }}</td>
               <td style="text-align:center;"><span class="count-badge">{{ row.count }}</span></td>
               <td>
                 <div class="actions">
@@ -153,7 +168,8 @@
                   <form method="post"
                         action="{{ url_for('main.delete_scanned_asset', map_id=space.map_id, summary_id=row.id) }}"
                         style="display:inline;"
-                        onsubmit="return confirm('Delete this scanned asset?');">
+                        onsubmit="return confirm('Delete this scanned asset entry?');">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <button type="submit" class="btn small danger">🗑️</button>
                   </form>
                 </div>

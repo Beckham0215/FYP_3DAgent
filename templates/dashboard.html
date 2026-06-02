@@ -85,6 +85,7 @@
           <form method="post" action="{{ url_for('main.delete_space', map_id=s.map_id) }}"
                 style="display:inline;"
                 onsubmit="return confirm('Delete \'{{ s.map_name }}\'? This cannot be undone.');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <button type="submit" class="btn danger small" title="Delete space">🗑️</button>
           </form>
         </div>

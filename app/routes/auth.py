@@ -1,4 +1,5 @@
 from flask import Blueprint, flash, redirect, render_template, request, session, url_for
+from urllib.parse import urlparse
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from app.extensions import db
@@ -61,7 +62,10 @@ def login():
             session["user_id"] = user.user_id
             session["username"] = user.username
             flash("Welcome back.", "success")
-            next_url = request.args.get("next") or url_for("main.dashboard")
+            next_url = request.args.get("next") or ""
+            # Reject external redirects (open redirect prevention)
+            if not next_url or urlparse(next_url).netloc:
+                next_url = url_for("main.dashboard")
             return redirect(next_url)
         flash("Invalid username or password.", "danger")
     return render_template("login.html")

@@ -4,41 +4,29 @@
  */
 
 document.addEventListener('DOMContentLoaded', function() {
-  console.log('[Panel Controls] Initializing...');
-  
   // Get all toggle buttons
   const toggleButtons = document.querySelectorAll('.toggle-btn');
-  console.log('[Panel Controls] Found', toggleButtons.length, 'toggle buttons');
-  
-  toggleButtons.forEach((button, index) => {
+
+  toggleButtons.forEach((button) => {
     button.addEventListener('click', function(e) {
       e.preventDefault();
       e.stopPropagation();
-      
-      console.log('[Panel Controls] Button clicked:', index);
-      
+
       // Find the parent panel
       const panel = this.closest('.hud-panel') || this.closest('.chat-overlay');
-      if (!panel) {
-        console.warn('[Panel Controls] Could not find parent panel for button', index);
-        return;
-      }
-      
-      console.log('[Panel Controls] Found panel:', panel.id);
-      
+      if (!panel) return;
+
       // Toggle minimized class
       const isMinimized = panel.classList.toggle('minimized');
-      console.log('[Panel Controls] Panel', panel.id, 'is now:', isMinimized ? 'minimized' : 'normal');
-      
+
       // Update button text
       this.textContent = isMinimized ? '+' : '−';
       this.title = isMinimized ? 'Maximize panel' : 'Minimize panel';
-      
+
       // Save state to localStorage
       const panelId = panel.id;
       if (panelId) {
         localStorage.setItem(`panel_${panelId}_minimized`, isMinimized);
-        console.log('[Panel Controls] Saved state for', panelId);
       }
     });
   });
@@ -118,7 +106,7 @@ function makePanelsDraggable() {
     
     function stopDrag() {
       isDragging = false;
-      panel.style.cursor = 'default';
+      panel.style.cursor = '';
       document.removeEventListener('mousemove', drag);
       document.removeEventListener('mouseup', stopDrag);
     }
