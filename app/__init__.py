@@ -46,11 +46,12 @@ def create_app():
     db.init_app(app)
     csrf.init_app(app)
 
-    from app.routes import api, auth, main
+    from app.routes import api, auth, main, maintenance
 
     app.register_blueprint(auth.bp)
     app.register_blueprint(main.bp)
     app.register_blueprint(api.bp)
+    app.register_blueprint(maintenance.bp)
 
     # API endpoints use session auth + JSON bodies; exempt from cookie-based CSRF.
     csrf.exempt(api.bp)
@@ -64,6 +65,7 @@ def create_app():
             "ALTER TABLE assets_summary ADD COLUMN bbox_json TEXT",
             "ALTER TABLE assets_summary ADD COLUMN best_angle REAL",
             "ALTER TABLE assets_summary ADD COLUMN serial_number INTEGER DEFAULT 1",
+            "ALTER TABLE user ADD COLUMN role VARCHAR(20) DEFAULT 'worker'",
         ]
         for _ddl in _MIGRATION_DDLS:
             try:
@@ -78,9 +80,11 @@ def create_app():
                 else:
                     logger.warning("Schema migration DDL failed unexpectedly: %s — %s", _ddl, e)
 
-    # Start loading the BLIP vision model in the background so the first
-    # scan request does not block for 30-60 seconds.
-    from app.services import blip_service
-    blip_service.preload()
+    # NOTE: heavy vision models (BLIP, YOLO, Grounding DINO) are NOT preloaded
+    # here. Under the Werkzeug debug reloader create_app() runs in both the
+    # watcher and the worker, so preloading here would load every model twice
+    # and can exhaust the Windows commit limit (paging-file "os error 1455").
+    # The dev entrypoint (run.py) warms the models in the worker process only;
+    # the lazy loaders inside each service cover production (single process).
 
     return app

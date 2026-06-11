@@ -692,15 +692,15 @@
 
   .tip-card {
     padding: var(--spacing-lg);
-    background: rgba(16, 163, 127, 0.04);
-    border: 1px solid var(--border-color);
+    background: var(--surface-1);
+    border: 1px solid var(--border);
     border-radius: var(--radius-md);
     transition: all 0.2s ease;
   }
 
   .tip-card:hover {
-    border-color: var(--accent-primary);
-    background: rgba(16, 163, 127, 0.08);
+    border-color: var(--border-hover);
+    box-shadow: var(--shadow);
     transform: translateY(-2px);
   }
 
@@ -730,17 +730,21 @@
 
   .tip-code {
     display: block;
-    background: rgba(0, 0, 0, 0.2);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
     padding: 0.5rem;
     border-radius: 4px;
     font-size: 0.85rem;
+    font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
     margin-top: 0.5rem;
   }
 
   /* Highlight Box */
   .highlight-box {
-    background: linear-gradient(135deg, rgba(16,163,127,0.1), rgba(99,102,241,0.1));
+    background: var(--accent-soft);
     padding: var(--spacing-lg);
+    border: 1px solid rgba(0, 112, 243, 0.2);
     border-left: 4px solid var(--accent-primary);
     border-radius: var(--radius-md);
     margin: var(--spacing-lg) 0;
@@ -750,7 +754,8 @@
   .naming-guide {
     margin-top: var(--spacing-lg);
     padding: var(--spacing-lg);
-    background: rgba(0, 0, 0, 0.2);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
     border-radius: var(--radius-md);
   }
 
@@ -801,7 +806,8 @@
   .faq-item {
     margin-bottom: var(--spacing-md);
     padding: var(--spacing-md);
-    background: rgba(0, 0, 0, 0.1);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     cursor: pointer;
   }
@@ -844,7 +850,8 @@
 
   code-list li {
     padding: 0.5rem;
-    background: rgba(0, 0, 0, 0.2);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
     border-radius: 4px;
     font-size: 0.9rem;
     font-family: monospace;

@@ -6,7 +6,7 @@ from flask import Blueprint, current_app, jsonify, request, session
 
 from app.extensions import db
 from app.label_match import resolve_asset
-from app.models import Asset, AssetsSummary, ChatHistoryLog, MatterportSpace, ScanHistory
+from app.models import Asset, AssetsSummary, ChatHistoryLog, MaintenanceReport, MatterportSpace, ScanHistory, User
 from app.services import blip_service, groq_service
 
 bp = Blueprint("api", __name__, url_prefix="/api")
@@ -19,6 +19,46 @@ def api_login_required(f):
         return f(*args, **kwargs)
 
     return decorated
+
+
+def _find_scanned_asset_instances(map_id: int, name: str) -> list:
+    """Return all AssetsSummary rows whose asset_name fuzzy-matches name, as serialisable dicts."""
+    if not name:
+        return []
+    from difflib import get_close_matches
+    name_lower = name.strip().lower()
+    rows = AssetsSummary.query.filter_by(map_id=map_id).all()
+    if not rows:
+        return []
+
+    all_names = list({r.asset_name for r in rows if r.asset_name})
+    exact = [n for n in all_names if n.lower() == name_lower]
+    if exact:
+        matched_names = {n.lower() for n in exact}
+    else:
+        close = get_close_matches(name_lower, [n.lower() for n in all_names], n=3, cutoff=0.4)
+        matched_names = set(close)
+        if not matched_names:
+            matched_names = {n.lower() for n in all_names if name_lower in n.lower() or n.lower() in name_lower}
+
+    if not matched_names:
+        return []
+
+    matched_rows = [r for r in rows if r.asset_name and r.asset_name.lower() in matched_names]
+    with_sweep = [r for r in matched_rows if r.sweep_uuid]
+    result_rows = with_sweep if with_sweep else matched_rows[:5]
+
+    return [
+        {
+            "sweep_uuid": r.sweep_uuid,
+            "best_angle": r.best_angle,
+            "bbox_json": json.loads(r.bbox_json) if r.bbox_json else None,
+            "serial_number": r.serial_number or 1,
+            "area_name": r.area_name or "",
+            "asset_name": r.asset_name,
+        }
+        for r in result_rows
+    ]
 
 
 def _log_chat(user_id: int, map_id: int, prompt: str, response: str):
@@ -58,31 +98,33 @@ def _extract_count_from_answer(answer: str) -> int:
 
 def _detect_objects_with_vision_and_positions(image_b64: str, area_context: str | None = None) -> tuple:
     """
-    Returns (counts_dict, positions_dict).
-    positions_dict maps object name → [cx, cy] normalized 0–1 coordinates.
-    Positions are only available when Groq vision is used.
+    Returns (counts_dict, positions_dict, positions_all_dict).
+    positions_dict maps name → [x1,y1,x2,y2] (the prominent instance);
+    positions_all_dict maps name → [[x1,y1,x2,y2], ...] (every instance).
+    Positions are only available when the CV (YOLO) path is used.
     """
     if not image_b64:
-        return {}, {}
+        return {}, {}, {}
     try:
         if current_app.config.get("GROQ_API_KEY"):
             result = groq_service.detect_objects_from_image_with_positions(image_b64, area_context)
-            counts    = result.get("counts", {})
-            positions = result.get("positions", {})
+            counts        = result.get("counts", {})
+            positions     = result.get("positions", {})
+            positions_all = result.get("positions_all", {})
             current_app.logger.info(f"[Vision] Groq vision detected: {counts}")
             if counts:
-                return counts, positions
+                return counts, positions, positions_all
             current_app.logger.warning("[Vision] Groq vision returned empty, falling back to BLIP")
 
         answer = blip_service.answer_visual_question(
             image_b64, "What furniture and objects are in this room?"
         )
         current_app.logger.info(f"[Vision] BLIP fallback response: {answer}")
-        return _parse_blip_detection_response(answer), {}
+        return _parse_blip_detection_response(answer), {}, {}
 
     except Exception as e:
         current_app.logger.exception(f"[Vision] Detection failed: {e}")
-        return {}, {}
+        return {}, {}, {}
 
 
 def _parse_blip_detection_response(response: str) -> dict:
@@ -394,6 +436,19 @@ def vla():
 
     if intent == "navigate":
         dest = routed.get("destination_label")
+
+        # If the LLM didn't extract a destination (common for non-room objects), pull it
+        # directly from the raw message using navigation-phrasing patterns.
+        if not dest:
+            _nav_re = re.compile(
+                r"(?:bring|take|navigate|go|show|lead)\s+(?:me\s+)?to\s+"
+                r"(?:the\s+)?(?:nearest\s+)?(.+?)(?:\s+please)?$",
+                re.IGNORECASE,
+            )
+            m = _nav_re.search(message.strip())
+            if m:
+                dest = m.group(1).strip()
+
         asset = resolve_asset(assets, dest) if dest else None
         if asset:
             msg = json.dumps({"label": asset.label_name, "sweep": asset.sweep_uuid})
@@ -406,8 +461,24 @@ def vla():
                     "label": asset.label_name,
                 }
             )
-        fallback = routed.get("reply") or (
-            "No matching tagged destination. Add labels and sweep UUIDs under Manage assets."
+
+        # Fallback: search scanned inventory (AssetsSummary) for the object
+        if dest:
+            instances = _find_scanned_asset_instances(map_id, dest)
+            if instances:
+                _log_chat(uid, map_id, message,
+                          f"[navigate_asset] {len(instances)} instance(s) of '{dest}'")
+                return jsonify({
+                    "ok": True,
+                    "intent": "navigate_asset",
+                    "asset_name": dest,
+                    "instances": instances,
+                })
+
+        fallback = (
+            f"No navigation labels or scanned instances found for "
+            f"'{dest or 'that destination'}'. "
+            "Try scanning the area first using the Scan Area button, or add a tagged location."
         )
         _log_chat(uid, map_id, message, fallback)
         return jsonify({"ok": True, "intent": "chat", "response": fallback})
@@ -510,6 +581,79 @@ def mark_asset():
     })
 
 
+@bp.route("/segment-view", methods=["POST"])
+@api_login_required
+def segment_view():
+    """Return an edge-fitting polygon outline for an object in the current view.
+
+    Best-effort: if the segmentation model is unavailable or the object isn't
+    found, responds ok=False and the client keeps its bounding-box highlight.
+    """
+    data = request.get_json(silent=True) or {}
+    image_b64 = data.get("image") or data.get("image_b64") or ""
+    object_name = (data.get("object_name") or "").strip()
+    bbox_hint = data.get("bbox")
+    if not image_b64 or not object_name:
+        return jsonify({"ok": False, "error": "image and object_name are required"}), 400
+    try:
+        from app.services import cv_service
+        result = cv_service.segment_object_in_image(image_b64, object_name, bbox_hint)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+    if not result:
+        return jsonify({"ok": False, "error": "no outline found"})
+    return jsonify({"ok": True, **result})
+
+
+@bp.route("/maintenance/report", methods=["POST"])
+@api_login_required
+def create_maintenance_report():
+    """File a maintenance issue pinned to the worker's current location."""
+    uid = session["user_id"]
+    data = request.get_json(silent=True) or {}
+
+    equipment = (data.get("equipment_name") or "").strip()
+    description = (data.get("description") or "").strip()
+    severity = (data.get("severity") or "medium").strip().lower()
+    sweep_uuid = (data.get("sweep_uuid") or "").strip()
+    area_name = (data.get("area_name") or "").strip()
+
+    if not equipment:
+        return jsonify({"ok": False, "error": "Equipment name is required"}), 400
+    if severity not in MaintenanceReport.SEVERITIES:
+        severity = "medium"
+
+    try:
+        map_id = int(data.get("map_id"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "map_id is required"}), 400
+
+    # Worker must have access to the space (they own it in this app).
+    space = MatterportSpace.query.filter_by(map_id=map_id, user_id=uid).first()
+    if not space:
+        return jsonify({"ok": False, "error": "Space not found"}), 404
+
+    user = db.session.get(User, uid)
+    report = MaintenanceReport(
+        map_id=map_id,
+        sweep_uuid=sweep_uuid or None,
+        area_name=area_name or None,
+        equipment_name=equipment,
+        description=description or None,
+        severity=severity,
+        status="open",
+        reported_by=uid,
+        reporter_name=user.username if user else None,
+    )
+    db.session.add(report)
+    db.session.commit()
+    return jsonify({
+        "ok": True,
+        "message": f"Issue reported: {equipment}",
+        "report_id": report.id,
+    })
+
+
 @bp.route("/scan-assets", methods=["POST"])
 @api_login_required
 def scan_assets():
@@ -537,7 +681,7 @@ def scan_assets():
         return jsonify({"ok": False, "error": "Space not found"}), 404
 
     try:
-        object_counts, _ = _detect_objects_with_vision_and_positions(image_b64, area_context)
+        object_counts, raw_positions, raw_positions_all = _detect_objects_with_vision_and_positions(image_b64, area_context)
     except Exception as e:
         current_app.logger.exception("Scan assets vision detector failed")
         return jsonify({"ok": False, "error": f"Vision detection failed: {e!s}"}), 500
@@ -549,17 +693,14 @@ def scan_assets():
         if label and count > 0:
             cleaned_counts[label] = count
 
-    # Second pass: locate bboxes for all detected objects in the same image.
-    # Runs after detection so the prompt stays focused and counts stay reliable.
-    positions = {}
-    if cleaned_counts:
-        try:
-            positions = groq_service.locate_all_objects_in_image(image_b64, list(cleaned_counts.keys()))
-        except Exception:
-            current_app.logger.warning("[Scan] locate_all failed — continuing without bboxes")
+    # Bounding boxes come straight from the YOLO detection pass (no extra model
+    # call), so highlight data is available instantly. positions = prominent box
+    # per object; positions_all = every instance's box for per-asset audits.
+    positions = {name: raw_positions[name] for name in cleaned_counts if name in raw_positions}
+    positions_all = {name: raw_positions_all[name] for name in cleaned_counts if name in raw_positions_all}
 
     current_app.logger.info(f"[Scan] Detected {len(cleaned_counts)} items, located {len(positions)} bboxes")
-    return jsonify({"ok": True, "objects": cleaned_counts, "positions": positions})
+    return jsonify({"ok": True, "objects": cleaned_counts, "positions": positions, "positions_all": positions_all})
 
 
 @bp.route("/scan-assets/summary", methods=["POST"])
@@ -892,6 +1033,7 @@ def suggest_location_name():
     map_id = data.get("map_id")
     image_b64 = (data.get("image_base64") or "").strip()
     detected_objects = data.get("detected_objects") or {}
+    nearby_names = data.get("nearby_names") or None
 
     try:
         map_id = int(map_id)
@@ -902,11 +1044,17 @@ def suggest_location_name():
     if not space:
         return jsonify({"ok": False, "error": "Space not found"}), 404
 
+    # The building/site name strongly anchors the likely area types
+    # (e.g. "Factory A" -> industrial areas, "BioLab" -> laboratory areas).
+    building_context = space.map_name or None
+
     suggested_name = None
     if image_b64:
-        suggested_name = groq_service.suggest_location_name_from_image(image_b64)
+        suggested_name = groq_service.suggest_location_name_from_image(
+            image_b64, building_context=building_context, nearby_names=nearby_names
+        )
     elif detected_objects:
-        suggested_name = groq_service.suggest_location_name_from_objects(detected_objects)
+        suggested_name = groq_service.suggest_location_name_from_objects(detected_objects, building_context=building_context)
 
     return jsonify({"ok": True, "suggested_name": suggested_name})
 

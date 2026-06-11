@@ -3,9 +3,14 @@ flask-sqlalchemy>=3.0.0
 flask-wtf>=1.2.0
 python-dotenv>=1.0.0
 groq>=0.4.0
-torch>=2.0.0
-transformers>=4.36.0
+torch==2.11.0
+torchvision==0.26.0
+transformers>=4.38.0
 Pillow>=10.0.0
 accelerate>=0.25.0
 safetensors>=0.4.0
 fpdf2>=2.7.0
+ultralytics>=8.0.0
+timm>=0.9.0
+supervision>=0.18.0
+opencv-python-headless>=4.8.0

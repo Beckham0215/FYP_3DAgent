@@ -10,9 +10,12 @@ class User(db.Model):
     username = db.Column(db.String(80), unique=True, nullable=False, index=True)
     password_hash = db.Column(db.String(256), nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False, index=True)
+    # "worker" (default) reports issues; "admin" triages & assigns mechanics.
+    role = db.Column(db.String(20), nullable=False, default="worker")
 
     spaces = db.relationship("MatterportSpace", backref="owner", lazy=True)
     chat_logs = db.relationship("ChatHistoryLog", backref="user", lazy=True)
+    reports = db.relationship("MaintenanceReport", backref="reporter", lazy=True)
 
 
 class MatterportSpace(db.Model):
@@ -26,6 +29,7 @@ class MatterportSpace(db.Model):
 
     assets = db.relationship("Asset", backref="space", lazy=True, cascade="all, delete-orphan")
     chat_logs = db.relationship("ChatHistoryLog", backref="space", lazy=True, cascade="all, delete-orphan")
+    reports = db.relationship("MaintenanceReport", backref="space", lazy=True, cascade="all, delete-orphan")
 
 
 class Asset(db.Model):
@@ -73,3 +77,38 @@ class ScanHistory(db.Model):
     area_name = db.Column(db.String(200), nullable=True, index=True)
     scanned_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     snapshot = db.Column(db.Text, nullable=False)  # JSON: {"chair": 3, "table": 1}
+
+
+class MaintenanceReport(db.Model):
+    """A worker-filed maintenance issue pinned to a location in a space.
+
+    Lifecycle: open → assigned (mechanic set) → in_progress → resolved.
+    Triage is driven by `severity` (low / medium / high / critical).
+    """
+
+    __tablename__ = "maintenance_reports"
+
+    SEVERITIES = ("low", "medium", "high", "critical")
+    STATUSES = ("open", "assigned", "in_progress", "resolved")
+
+    id = db.Column(db.Integer, primary_key=True)
+    map_id = db.Column(db.Integer, db.ForeignKey("matterport_space.map_id"), nullable=False, index=True)
+
+    # Where in the space the issue is — sweep_uuid lets the viewer deep-link to it.
+    sweep_uuid = db.Column(db.String(64), nullable=True)
+    area_name = db.Column(db.String(200), nullable=True)
+
+    equipment_name = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text, nullable=True)
+    severity = db.Column(db.String(20), nullable=False, default="medium", index=True)
+    status = db.Column(db.String(20), nullable=False, default="open", index=True)
+
+    reported_by = db.Column(db.Integer, db.ForeignKey("user.user_id"), nullable=True, index=True)
+    reporter_name = db.Column(db.String(80), nullable=True)  # snapshot, survives user deletion
+
+    assigned_to = db.Column(db.String(120), nullable=True)   # mechanic name
+    assigned_at = db.Column(db.DateTime, nullable=True)
+    resolved_at = db.Column(db.DateTime, nullable=True)
+
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

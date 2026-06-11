@@ -26,6 +26,16 @@
               <span>Dashboard</span>
             </a>
           </li>
+          <li class="sidebar-nav-item">
+            <a href="{{ url_for('maintenance.maintenance') }}"
+               class="sidebar-nav-link {% if request.endpoint == 'maintenance.maintenance' %}active{% endif %}">
+              <span class="nav-icon">🛠️</span>
+              <span>Maintenance</span>
+              {% if maintenance_open_count and maintenance_open_count > 0 %}
+                <span class="nav-badge" title="{{ maintenance_open_count }} open report{{ 's' if maintenance_open_count != 1 else '' }}">{{ maintenance_open_count }}</span>
+              {% endif %}
+            </a>
+          </li>
         </ul>
 
         <!-- Current Space (only when a space is open) -->

@@ -38,7 +38,8 @@
   let scanTagsVisible = false;
   let pendingScanViewData = [];    // [{angle, absolute_angle, sweep_uuid, objects, bboxes, image}]
   let pendingScanBaseRotation = { x: 0, y: 0 }; // base rotation at scan start
-  let tightBboxCache = {};         // assetName → [x1,y1,x2,y2] — pre-fetched tight bboxes
+  let tightBboxCache = {};         // assetName → [x1,y1,x2,y2] — prominent (instance #1) bbox
+  let instanceBboxCache = {};      // assetName → { angle, boxes:[[x1,y1,x2,y2],...] } — per-instance
   let _prefetchPromise = null;     // Promise returned by _prefetchTightBboxes — awaited before save
   const chatHistory = []; // [{role:"user"|"assistant", content}] — last 10 msgs
 
@@ -188,6 +189,16 @@
       setStatus("✓ SDK connected - you can navigate and use vision.");
       console.log("[3DAgent] ✓ SDK successfully connected");
       initMinimap().catch(function (e) { console.warn("[3DAgent] Minimap init failed:", e); });
+
+      // Deep-link: a maintenance report can open the viewer at ?goto=<sweep_uuid>
+      // so an admin/mechanic lands on the reported location.
+      try {
+        var _goto = new URLSearchParams(window.location.search).get("goto");
+        if (_goto) {
+          appendLine("system", "📍 Navigating to the reported location…");
+          setTimeout(function () { handleNavigate(_goto); }, 3500);
+        }
+      } catch (e) { /* no-op */ }
     } catch (e) {
       console.error("[3DAgent] Connection error:", e);
       const msg = e && e.message ? e.message : String(e);
@@ -313,7 +324,10 @@
   const scanHighlightOverlay = document.getElementById("scan-highlight-overlay");
   const shoLabelEl           = document.getElementById("sho-label");
   const shoMarkerEl          = document.getElementById("sho-marker");
+  const shoSvgEl             = document.getElementById("sho-svg");
+  const shoPolyEl            = document.getElementById("sho-poly");
   const shoDismissBtn        = document.getElementById("sho-dismiss");
+  let   _highlightToken      = 0;   // guards against stale async seg results
 
   if (shoDismissBtn) {
     shoDismissBtn.addEventListener("click", clearHighlightOverlay);
@@ -323,6 +337,13 @@
   // If null/invalid, shows label only so the user knows the camera view is correct.
   function showHighlightOverlay(objectName, bbox) {
     if (!scanHighlightOverlay) return;
+
+    const token = ++_highlightToken;
+
+    // Reset any previous edge outline; the box shows first, the precise
+    // outline replaces it once segmentation returns (best-effort).
+    if (shoSvgEl)  shoSvgEl.style.display = "none";
+    if (shoPolyEl) shoPolyEl.setAttribute("points", "");
 
     if (shoLabelEl) {
       shoLabelEl.textContent = bbox && bbox.length === 4
@@ -356,11 +377,48 @@
     }
 
     scanHighlightOverlay.style.display = "block";
+
+    // Refine the rectangle into an edge-hugging outline (non-blocking).
+    _refineHighlightWithSeg(objectName, bbox, token);
+  }
+
+  // Capture the current viewport and ask the segmentation model for a polygon
+  // that hugs the object's edges. Falls back silently to the box on any failure.
+  async function _refineHighlightWithSeg(objectName, bboxHint, token) {
+    try {
+      if (!sdk || !sdk.Renderer || !shoSvgEl || !shoPolyEl) return;
+      const image = await captureViewportBase64();
+      const res = await fetch("/api/segment-view", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ image, object_name: objectName, bbox: bboxHint || null }),
+      });
+      const data = await res.json().catch(() => ({ ok: false }));
+
+      // Bail if the user dismissed or triggered another highlight meanwhile.
+      if (token !== _highlightToken) return;
+      if (!data.ok || !Array.isArray(data.polygon) || data.polygon.length < 3) return;
+      if (!scanHighlightOverlay || scanHighlightOverlay.style.display === "none") return;
+
+      const pts = data.polygon
+        .map((p) => `${(+p[0]).toFixed(4)},${(+p[1]).toFixed(4)}`)
+        .join(" ");
+      shoPolyEl.setAttribute("points", pts);
+      shoSvgEl.style.display = "block";
+      if (shoMarkerEl) shoMarkerEl.style.display = "none";  // outline is tighter than the box
+      if (shoLabelEl)  shoLabelEl.textContent = `🔆 ${objectName} — outlined`;
+    } catch (e) {
+      /* keep the bounding-box highlight */
+    }
   }
 
   function clearHighlightOverlay() {
+    _highlightToken++;
     if (scanHighlightOverlay) scanHighlightOverlay.style.display = "none";
     if (shoMarkerEl) shoMarkerEl.style.display = "none";
+    if (shoSvgEl)  shoSvgEl.style.display = "none";
+    if (shoPolyEl) shoPolyEl.setAttribute("points", "");
   }
 
   async function postScanAsset(body) {
@@ -471,6 +529,25 @@
     });
   }
 
+  // Highlight one scan asset. instanceIndex null → the prominent (whole-asset)
+  // box; a number → that specific instance's box (asset #i). Both rotate to the
+  // best view and draw the YOLO bbox cached at scan time — no API call.
+  async function _highlightScanAsset(assetName, instanceIndex) {
+    if (!pendingScanViewData.length) return;
+    const cache  = instanceBboxCache[assetName] || { angle: 0, boxes: [] };
+    const hasIdx = instanceIndex != null && !Number.isNaN(instanceIndex);
+    const bbox   = hasIdx ? (cache.boxes[instanceIndex] || null) : (tightBboxCache[assetName] || null);
+    const label  = hasIdx ? `${assetName} #${instanceIndex + 1}` : assetName;
+
+    clearHighlightOverlay();
+    if (shoLabelEl) shoLabelEl.textContent = `🔍 ${label} — locating…`;
+    if (scanHighlightOverlay) scanHighlightOverlay.style.display = "block";
+
+    const yaw = (pendingScanBaseRotation.y || 0) + (cache.angle || 0);
+    try { await rotateToYawAtCurrentSweep(yaw, pendingScanBaseRotation.x || 0); } catch (_) {}
+    showHighlightOverlay(label, bbox);
+  }
+
   function renderScanReview(counts) {
     if (!scanReviewPanel || !scanReviewList) return;
 
@@ -498,27 +575,32 @@
         .map(([asset, count]) => {
           const numCount = parseInt(count) || count;
           const hasViewData = pendingScanViewData.length > 0;
+          const expandable = hasViewData && numCount > 1;
           return `
-          <div class="scan-review-item" data-asset="${asset}">
-            <div class="scan-item-label">
-              <span class="scan-item-name${hasViewData ? " scan-item-clickable" : ""}" data-asset="${asset}">${asset}</span>
-              ${counts[asset] && counts[asset].viewsDetected != null
-                ? `<span class="scan-item-confidence">${counts[asset].viewsDetected}/${counts[asset].totalViews || 6} views</span>`
-                : ""}
+          <div class="scan-review-group" data-asset="${asset}">
+            <div class="scan-review-item" data-asset="${asset}">
+              <div class="scan-item-label">
+                ${expandable ? `<button type="button" class="scan-expand-btn" data-asset="${asset}" title="List each ${asset} individually">▸</button>` : ""}
+                <span class="scan-item-name${hasViewData ? " scan-item-clickable" : ""}" data-asset="${asset}">${asset}</span>
+                ${counts[asset] && counts[asset].viewsDetected != null
+                  ? `<span class="scan-item-confidence">${counts[asset].viewsDetected}/${counts[asset].totalViews || 6} views</span>`
+                  : ""}
+              </div>
+              <div class="scan-item-controls">
+                <button type="button" class="scan-item-btn-minus" title="Decrease count">−</button>
+                <input
+                  type="number"
+                  class="scan-item-count-input"
+                  value="${numCount}"
+                  min="0"
+                  max="999"
+                  data-asset="${asset}"
+                >
+                <button type="button" class="scan-item-btn-plus" title="Increase count">+</button>
+                <button type="button" class="scan-item-btn-delete" title="Remove item">✕</button>
+              </div>
             </div>
-            <div class="scan-item-controls">
-              <button type="button" class="scan-item-btn-minus" title="Decrease count">−</button>
-              <input 
-                type="number" 
-                class="scan-item-count-input" 
-                value="${numCount}" 
-                min="0" 
-                max="999"
-                data-asset="${asset}"
-              >
-              <button type="button" class="scan-item-btn-plus" title="Increase count">+</button>
-              <button type="button" class="scan-item-btn-delete" title="Remove item">✕</button>
-            </div>
+            <div class="scan-instance-list" data-asset="${asset}" style="display:none;"></div>
           </div>
         `})
         .join("");
@@ -567,67 +649,63 @@
         });
       });
 
-      // Delete button
+      // Delete button — removes the whole group (item + instance list)
       scanReviewList.querySelectorAll(".scan-item-btn-delete").forEach((btn) => {
         btn.addEventListener("click", function (e) {
           e.preventDefault();
-          const item = this.closest(".scan-review-item");
-          const asset = item.dataset.asset;
-          item.remove();
+          const group = this.closest(".scan-review-group");
+          const asset = group.dataset.asset;
+          group.remove();
           delete selectedScanItems[asset];
         });
       });
 
-      // Feature 2: click asset name → rotate to best view + show pre-computed bbox
-      // Bboxes are computed during scan so there is no extra API call on click.
+      // Click asset name → highlight the prominent instance (no API call).
       scanReviewList.querySelectorAll(".scan-item-clickable").forEach((nameEl) => {
-        nameEl.addEventListener("click", async function () {
-          const assetName = this.dataset.asset;
-          if (!pendingScanViewData.length) return;
+        nameEl.addEventListener("click", () => _highlightScanAsset(nameEl.dataset.asset, null));
+      });
 
-          // Find the view where this asset was detected most often
-          let bestView = pendingScanViewData[0];
-          let bestCount = 0;
-          pendingScanViewData.forEach((view) => {
-            const c = view.objects[assetName] || 0;
-            if (c > bestCount) { bestCount = c; bestView = view; }
-          });
+      // Expand button → list each instance (asset #1 … #N) with its own highlight.
+      scanReviewList.querySelectorAll(".scan-expand-btn").forEach((btn) => {
+        btn.addEventListener("click", function (e) {
+          e.preventDefault();
+          const asset = this.dataset.asset;
+          const group = this.closest(".scan-review-group");
+          const list  = group.querySelector(".scan-instance-list");
+          if (!list) return;
 
-          // Show feedback immediately
-          clearHighlightOverlay();
-          if (shoLabelEl) shoLabelEl.textContent = `🔍 ${assetName} — locating…`;
-          if (scanHighlightOverlay) scanHighlightOverlay.style.display = "block";
-
-          const yaw = (pendingScanBaseRotation.y || 0) + bestView.angle;
-
-          if (tightBboxCache[assetName] !== undefined) {
-            // Cache hit — bbox is [x1,y1,x2,y2] or null
-            try { await rotateToYawAtCurrentSweep(yaw, pendingScanBaseRotation.x || 0); } catch (_) {}
-            showHighlightOverlay(assetName, tightBboxCache[assetName]);
-          } else {
-            // Cache miss — rotate and fetch the primary bbox in parallel
-            const rotationDone = rotateToYawAtCurrentSweep(yaw, pendingScanBaseRotation.x || 0).catch(() => {});
-            const bboxReady = bestView.image
-              ? fetch("/api/locate-object", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  credentials: "same-origin",
-                  body: JSON.stringify({ map_id: mapId, object_name: assetName, image_base64: bestView.image }),
-                })
-                  .then((r) => r.json().catch(() => ({})))
-                  .then((d) => (d.ok && d.bbox) ? d.bbox : null)
-                  .catch(() => null)
-              : Promise.resolve(null);
-
-            const [, bbox] = await Promise.all([rotationDone, bboxReady]);
-            tightBboxCache[assetName] = bbox;
-            showHighlightOverlay(assetName, bbox);
+          if (list.style.display !== "none") {
+            list.style.display = "none";
+            this.textContent = "▸";
+            return;
           }
+
+          // Build rows from the CURRENT (possibly edited) count.
+          const input = group.querySelector(".scan-item-count-input");
+          const count = Math.max(0, parseInt(input && input.value) || 0);
+          const cache = instanceBboxCache[asset] || { boxes: [] };
+
+          let rows = "";
+          for (let i = 0; i < count; i++) {
+            const hasBox = !!(cache.boxes && cache.boxes[i]);
+            rows += `<div class="scan-instance-row">
+              <span class="scan-instance-label">${asset} #${i + 1}${hasBox ? "" : " <span class='scan-instance-noloc'>(approx.)</span>"}</span>
+              <button type="button" class="scan-instance-hl" data-asset="${asset}" data-index="${i}" title="Highlight ${asset} #${i + 1}">🔆</button>
+            </div>`;
+          }
+          list.innerHTML = rows || `<div class="scan-instance-empty">No instances.</div>`;
+          list.querySelectorAll(".scan-instance-hl").forEach((hb) => {
+            hb.addEventListener("click", () =>
+              _highlightScanAsset(hb.dataset.asset, parseInt(hb.dataset.index)));
+          });
+          list.style.display = "block";
+          this.textContent = "▾";
         });
       });
     }
 
     scanReviewPanel.style.display = "flex";
+    try { scanReviewPanel.scrollIntoView({ behavior: "smooth", block: "nearest" }); } catch (_) {}
   }
 
   function formatCountsForChat(counts) {
@@ -649,33 +727,31 @@
     ).join(", ");
   }
 
-  // Pre-fetch the primary tight bbox for each detected asset right after the scan.
-  // Uses /api/locate-object (single reliable detection per asset) so the first
-  // click on any scan result is instant.
+  // Collect the primary tight bbox for each detected asset from the boxes YOLO
+  // already produced during the scan. No extra API call — highlight data is
+  // available instantly, sourced from the view where the asset was seen most.
   // tightBboxCache[name] = [x1,y1,x2,y2] | null  (single value, not wrapped in array).
-  // Returns a Promise so the save handler can await before building bbox_data.
+  // Returns a resolved Promise so the save handler's `await` still works.
   function _prefetchTightBboxes(counts) {
     tightBboxCache = {};
-    const names = Object.keys(counts || {});
-    const fetches = names.map((name) => {
-      let bestView = null, bestCount = 0;
+    instanceBboxCache = {};
+    Object.keys(counts || {}).forEach((name) => {
+      // Pick the view where this asset was seen the most — that view holds the
+      // full set of per-instance boxes that matches the displayed count.
+      let bestView = null, bestCount = -1;
       pendingScanViewData.forEach((view) => {
         const c = view.objects[name] || 0;
         if (c > bestCount) { bestCount = c; bestView = view; }
       });
-      if (!bestView || !bestView.image) return Promise.resolve();
-
-      return fetch("/api/locate-object", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify({ map_id: mapId, object_name: name, image_base64: bestView.image }),
-      })
-        .then((r) => r.json().catch(() => ({})))
-        .then((d) => { tightBboxCache[name] = (d.ok && d.bbox) ? d.bbox : null; })
-        .catch(() => {});
+      const allBoxes = (bestView && bestView.bboxes_all && bestView.bboxes_all[name]) || [];
+      const single   = (bestView && bestView.bboxes && bestView.bboxes[name]) || allBoxes[0] || null;
+      tightBboxCache[name]    = single;
+      instanceBboxCache[name] = {
+        angle: bestView ? bestView.angle : 0,
+        boxes: allBoxes,
+      };
     });
-    return Promise.all(fetches);
+    return Promise.resolve();
   }
 
   function hideScanReview() {
@@ -685,6 +761,7 @@
     selectedScanItems = {};
     pendingScanViewData = [];
     tightBboxCache = {};
+    instanceBboxCache = {};
     _prefetchPromise = null;
     if (scanAreaNameInput) scanAreaNameInput.value = "";
     if (scanLocationSelect) scanLocationSelect.value = "";
@@ -752,11 +829,25 @@
 
   // ── Feature 1: Auto-tag all sweeps in the space ───────────────────────────
 
-  async function autoTagLocations() {
+  // Same room within this horizontal distance (metres) → reuse the neighbour's
+  // exact label so one room keeps one name. Larger radius feeds the vision model
+  // nearby names as context so even new areas stay consistent.
+  const AUTOTAG_ROOM_RADIUS = 2.5;
+  const AUTOTAG_NEARBY_RADIUS = 7.0;
+
+  function _horizDist(ax, az, bx, bz) {
+    const dx = ax - bx, dz = az - bz;
+    return Math.sqrt(dx * dx + dz * dz);
+  }
+
+  // targetUuids: array of sweep uuids to tag, or null = every untagged sweep.
+  async function autoTagLocations(targetUuids) {
     if (!sdk || !sdk.Sweep) {
       appendLine("system", "SDK not connected — cannot auto-tag.");
       return;
     }
+
+    const targetSet = Array.isArray(targetUuids) ? new Set(targetUuids) : null;
 
     isAutoTagging = true;
     autoTagShouldStop = false;
@@ -833,8 +924,10 @@
       const existingAssets = assetsData.assets || [];
       const taggedUuids = new Set(existingAssets.map(a => a.sweep_uuid));
 
-      // Pre-populate category counters so numbering continues correctly
+      // Pre-populate category counters so numbering continues correctly, and
+      // seed the spatial "placed" list from existing tags that have positions.
       const categoryCounters = {};
+      const placed = [];  // {x, z, floorId, category, label}
       existingAssets.forEach(a => {
         const cat = (a.category || "").trim().toLowerCase();
         if (cat) {
@@ -842,88 +935,134 @@
           const num = numMatch ? parseInt(numMatch[1]) : 1;
           categoryCounters[cat] = Math.max(categoryCounters[cat] || 0, num);
         }
+        const sd = allSweepData[a.sweep_uuid];
+        if (sd && sd.position) {
+          placed.push({
+            x: sd.position.x, z: sd.position.z,
+            floorId: (sd.floorInfo || {}).id,
+            category: (a.category || "").trim(),
+            label: a.label_name,
+          });
+        }
       });
 
-      const untagged = allSweeps.filter(s => !taggedUuids.has(s.uuid));
-      const limit = Math.min(untagged.length, 30);
+      let untagged = allSweeps.filter(s => !taggedUuids.has(s.uuid));
+      if (targetSet) untagged = untagged.filter(s => targetSet.has(s.uuid));
 
-      appendLine("system", `Found ${allSweeps.length} sweep(s), ${untagged.length} untagged. Auto-tagging up to ${limit}…`);
-      if (autoTagStatusEl) autoTagStatusEl.textContent = `0 / ${limit} tagged`;
+      // Walk room-by-room: order by floor then position so spatially close
+      // sweeps are processed together → labels propagate cleanly.
+      untagged.sort((a, b) => {
+        const pa = (allSweepData[a.uuid] || {}).position || {};
+        const pb = (allSweepData[b.uuid] || {}).position || {};
+        return (pa.x || 0) - (pb.x || 0) || (pa.z || 0) - (pb.z || 0);
+      });
+
+      const total = untagged.length;
+      const scopeLabel = targetSet ? `${total} selected sweep(s)` : `${total} untagged`;
+      appendLine("system", `Found ${allSweeps.length} sweep(s). Auto-tagging ${scopeLabel}…`);
+      if (autoTagStatusEl) autoTagStatusEl.textContent = `0 / ${total} tagged`;
+
+      // Nearest already-placed point on the same floor, within `radius`.
+      function _nearestPlaced(x, z, floorId, radius) {
+        let best = null, bestD = radius;
+        placed.forEach(p => {
+          if (floorId != null && p.floorId != null && String(p.floorId) !== String(floorId)) return;
+          const d = _horizDist(x, z, p.x, p.z);
+          if (d <= bestD) { bestD = d; best = p; }
+        });
+        return best;
+      }
 
       let tagged = 0;
-      for (let i = 0; i < limit; i++) {
-        if (autoTagShouldStop) {
-          appendLine("system", "⏹ Auto-tagging stopped by user.");
-          break;
-        }
+      for (let i = 0; i < total; i++) {
+        if (autoTagShouldStop) { appendLine("system", "⏹ Auto-tagging stopped by user."); break; }
 
         const sweep = untagged[i];
-        if (autoTagStatusEl) autoTagStatusEl.textContent = `Visiting sweep ${i + 1} / ${limit}…`;
+        const sd  = allSweepData[sweep.uuid] || {};
+        const pos = sd.position || sweep.position || null;
+        const floorId = (sd.floorInfo || sweep.floorInfo || {}).id;
 
-        try {
-          await sdk.Sweep.moveTo(sweep.uuid, {
-            transition: sdk.Sweep.Transition.FLY,
-            transitionTime: 1200,
-          });
-        } catch (navErr) {
-          console.warn("[3DAgent] Auto-tag nav error:", navErr);
-          continue;
-        }
-        await sleep(2200);
-
-        if (autoTagShouldStop) {
-          appendLine("system", "⏹ Auto-tagging stopped by user.");
-          break;
-        }
-
-        // Ask AI to identify the room type (used as category)
         let category = null;
-        try {
-          const imageBase64 = await captureViewportBase64();
-          const sugRes = await fetch("/api/suggest-location-name", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "same-origin",
-            body: JSON.stringify({ map_id: mapId, image_base64: imageBase64 }),
-          });
-          const sugData = await sugRes.json().catch(() => ({}));
-          category = sugData.suggested_name || null;
-        } catch (e) {
-          console.warn("[3DAgent] Suggest name error:", e);
-        }
+        let label = null;
 
-        if (!category) {
-          appendLine("system", `  Sweep ${i + 1}: could not identify room — skipping.`);
-          continue;
-        }
+        // 1) Very close to an already-named point on the same floor → same room,
+        //    inherit its exact label. No camera move, no API call.
+        const sameRoom = pos ? _nearestPlaced(pos.x, pos.z, floorId, AUTOTAG_ROOM_RADIUS) : null;
+        if (sameRoom) {
+          label = sameRoom.label;
+          category = sameRoom.category;
+          if (autoTagStatusEl) autoTagStatusEl.textContent = `Sweep ${i + 1} / ${total} (same room)…`;
+        } else {
+          // 2) New area → travel there, look, and name it WITH nearby context so
+          //    the model stays consistent rather than inventing a fresh name.
+          if (autoTagStatusEl) autoTagStatusEl.textContent = `Visiting sweep ${i + 1} / ${total}…`;
+          try {
+            await sdk.Sweep.moveTo(sweep.uuid, { transition: sdk.Sweep.Transition.FLY, transitionTime: 1200 });
+          } catch (navErr) {
+            console.warn("[3DAgent] Auto-tag nav error:", navErr);
+            continue;
+          }
+          await sleep(2200);
+          if (autoTagShouldStop) { appendLine("system", "⏹ Auto-tagging stopped by user."); break; }
 
-        // Assign numbered label within this category (e.g. "Kitchen 1", "Kitchen 2")
-        const catKey = category.toLowerCase();
-        categoryCounters[catKey] = (categoryCounters[catKey] || 0) + 1;
-        const label = `${category} ${categoryCounters[catKey]}`;
+          const nearby = pos
+            ? placed.filter(p => (floorId == null || p.floorId == null || String(p.floorId) === String(floorId)) &&
+                                 _horizDist(pos.x, pos.z, p.x, p.z) <= AUTOTAG_NEARBY_RADIUS)
+            : [];
+          const nearbyNames = Array.from(new Set(nearby.map(p => p.label)));
+
+          let suggestion = null;
+          try {
+            const imageBase64 = await captureViewportBase64();
+            const sugRes = await fetch("/api/suggest-location-name", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "same-origin",
+              body: JSON.stringify({ map_id: mapId, image_base64: imageBase64, nearby_names: nearbyNames }),
+            });
+            const sugData = await sugRes.json().catch(() => ({}));
+            suggestion = sugData.suggested_name || null;
+          } catch (e) {
+            console.warn("[3DAgent] Suggest name error:", e);
+          }
+
+          if (!suggestion) {
+            appendLine("system", `  Sweep ${i + 1}: could not identify area — skipping.`);
+            continue;
+          }
+
+          // If the model picked an existing nearby label, reuse it (same room);
+          // otherwise it's a new area → assign a fresh numbered label.
+          const match = nearby.find(p => p.label.toLowerCase() === suggestion.toLowerCase());
+          if (match) {
+            label = match.label;
+            category = match.category || suggestion;
+          } else {
+            category = suggestion;
+            const catKey = category.toLowerCase();
+            categoryCounters[catKey] = (categoryCounters[catKey] || 0) + 1;
+            label = `${category} ${categoryCounters[catKey]}`;
+          }
+        }
 
         try {
           const markRes = await fetch("/api/mark-asset", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             credentials: "same-origin",
-            body: JSON.stringify({
-              map_id: mapId,
-              asset_name: label,
-              sweep_uuid: sweep.uuid,
-              category: category,
-            }),
+            body: JSON.stringify({ map_id: mapId, asset_name: label, sweep_uuid: sweep.uuid, category: category || undefined }),
           });
           const markData = await markRes.json().catch(() => ({}));
           if (markData.ok) {
             tagged++;
-            appendLine("agent", `  ✓ Sweep ${i + 1}: "${label}" [category: ${category}]`);
+            if (pos) placed.push({ x: pos.x, z: pos.z, floorId: floorId, category: category || "", label: label });
+            appendLine("agent", `  ✓ Sweep ${i + 1}: "${label}"${sameRoom ? " (same room)" : ""}`);
           }
         } catch (e) {
           console.warn("[3DAgent] Mark asset error:", e);
         }
 
-        if (autoTagStatusEl) autoTagStatusEl.textContent = `${tagged} / ${limit} tagged`;
+        if (autoTagStatusEl) autoTagStatusEl.textContent = `${tagged} / ${total} tagged`;
       }
 
       if (!autoTagShouldStop) {
@@ -1171,10 +1310,10 @@
     scanTagsVisible = !scanTagsVisible;
     const btn = document.getElementById("show-scanned-btn");
     if (scanTagsVisible) {
-      if (btn) { btn.textContent = "🏷️ Hide Scanned"; btn.style.color = "var(--accent-primary)"; }
+      if (btn) { btn.style.color = "var(--accent-primary)"; var _l = document.getElementById("show-scanned-label"); if (_l) _l.textContent = "Hide Scanned"; }
       await loadAndShowScanTags();
     } else {
-      if (btn) { btn.textContent = "🏷️ Show Scanned"; btn.style.color = ""; }
+      if (btn) { btn.style.color = ""; var _l = document.getElementById("show-scanned-label"); if (_l) _l.textContent = "Show Scanned"; }
       await _removeAllScanTags();
       appendLine("system", "Scan highlights hidden.");
     }
@@ -1245,6 +1384,7 @@
         sweep_uuid: currentSweepUuid,
         objects: scanResult.objects || {},
         bboxes: scanResult.positions || {},
+        bboxes_all: scanResult.positions_all || {},
         image: imageBase64,
       });
       showLiveOverlay(i + 1, stepAngles.length, stepAngles[i], scanResult.objects || {});
@@ -1318,6 +1458,7 @@
           sweep_uuid: sweep.sweep_uuid,
           objects: scanResult.objects || {},
           bboxes: scanResult.positions || {},
+          bboxes_all: scanResult.positions_all || {},
           image: imageBase64,
         });
       }
@@ -1392,6 +1533,25 @@
       }
     }
     return null; // no path found (disconnected graph)
+  }
+
+  // Returns the instance from the list whose sweep_uuid is closest (BFS hops) to the
+  // current position. Falls back to the first instance with a sweep_uuid if the graph
+  // is not yet loaded, or to the first instance overall if none have a sweep_uuid.
+  function findNearestAssetInstance(instances) {
+    if (!instances || instances.length === 0) return null;
+    const withSweep = instances.filter(i => i.sweep_uuid);
+    if (withSweep.length === 0) return instances[0];
+    if (withSweep.length === 1) return withSweep[0];
+    if (!currentSweepUuid || Object.keys(allSweepData).length === 0) return withSweep[0];
+
+    let best = null, bestDist = Infinity;
+    for (const inst of withSweep) {
+      const path = findRoute(currentSweepUuid, inst.sweep_uuid);
+      const dist = path ? path.length : Infinity;
+      if (dist < bestDist) { bestDist = dist; best = inst; }
+    }
+    return best || withSweep[0];
   }
 
   function clearRoute() {
@@ -1555,6 +1715,64 @@
     });
   }
 
+  // --- MAINTENANCE REPORT FORM HANDLER ---
+  const reportForm = document.getElementById("report-issue-form");
+  const reportStatusEl = document.getElementById("report-status");
+
+  if (reportForm) {
+    reportForm.addEventListener("submit", async function (ev) {
+      ev.preventDefault();
+
+      const equipment = (document.getElementById("report-equipment").value || "").trim();
+      const description = (document.getElementById("report-description").value || "").trim();
+      const severity = document.getElementById("report-severity").value || "medium";
+
+      if (!equipment) {
+        reportStatusEl.textContent = "❌ Enter the equipment name";
+        reportStatusEl.style.color = "var(--danger)";
+        return;
+      }
+
+      // If the current sweep is a known tagged location, send its label as the area.
+      let areaName = "";
+      const tag = currentSweepUuid ? taggedSweepMap[currentSweepUuid] : null;
+      if (tag) areaName = tag.label_name + (tag.category ? " (" + tag.category + ")" : "");
+
+      reportStatusEl.textContent = "⏳ Submitting…";
+      reportStatusEl.style.color = "var(--text-muted)";
+
+      try {
+        const res = await fetch("/api/maintenance/report", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({
+            map_id: mapId,
+            equipment_name: equipment,
+            description: description || undefined,
+            severity: severity,
+            sweep_uuid: currentSweepUuid || undefined,
+            area_name: areaName || undefined,
+          }),
+        });
+        const data = await res.json().catch(() => ({ ok: false, error: "Invalid response" }));
+        if (!res.ok || data.ok === false) throw new Error(data.error || res.statusText);
+
+        reportStatusEl.textContent = "✓ Issue reported — admin notified.";
+        reportStatusEl.style.color = "var(--success)";
+        document.getElementById("report-equipment").value = "";
+        document.getElementById("report-description").value = "";
+        document.getElementById("report-severity").value = "medium";
+        appendLine("system", "🛠️ Maintenance issue reported: " + equipment + " — severity: " + severity + ".");
+        setTimeout(() => { reportStatusEl.textContent = ""; }, 4000);
+      } catch (err) {
+        console.error("[3DAgent] Report issue error:", err);
+        reportStatusEl.textContent = "❌ " + (err.message || String(err));
+        reportStatusEl.style.color = "var(--danger)";
+      }
+    });
+  }
+
   if (scanAreaBtn) {
     scanAreaBtn.addEventListener("click", function () {
       if (isScanning) {
@@ -1599,10 +1817,220 @@
         autoTagBtn.disabled = true;
         autoTagBtn.textContent = "⏹ Stopping…";
       } else {
-        autoTagLocations();
+        openAutoTagFloorplan();
       }
     });
   }
+
+  // ── Auto-Tag floor-plan sweep selector ────────────────────────────────────
+  const autoTagFp           = document.getElementById("autotag-floorplan");
+  const autoTagCanvas       = document.getElementById("autotag-canvas");
+  const autoTagViewFloor    = document.getElementById("autotag-view-floor");
+  const autoTagCountEl      = document.getElementById("autotag-count");
+  const autoTagSelectAllBtn = document.getElementById("autotag-select-all");
+  const autoTagClearBtn     = document.getElementById("autotag-clear");
+  const autoTagRunSelBtn    = document.getElementById("autotag-run-selected");
+  const autoTagRunAllBtn    = document.getElementById("autotag-run-all");
+  const autoTagFpCancelBtn  = document.getElementById("autotag-fp-cancel");
+  const autoTagFpCloseBtn   = document.getElementById("autotag-fp-close");
+
+  const autoTagSelected     = new Set();   // uuids the user picked
+  let   autoTagViewFloorId  = null;        // floor shown in the selector
+  let   _autoTagHit         = [];          // [{uuid,x,y}] for click hit-testing
+
+  function _floorDisplayName(f) {
+    if (f && f.name) return f.name;
+    return "Floor " + (((f && f.seq != null) ? f.seq : 0) + 1);
+  }
+
+  // Build the set of floors from the sweep data the minimap already loaded.
+  function _detectFloors() {
+    const map = {};
+    Object.values(allSweepData || {}).forEach(function (s) {
+      const fi = s && s.floorInfo;
+      if (fi && fi.id !== undefined && fi.id !== null) {
+        if (!map[fi.id]) {
+          const meta = Object.values(floorDataMap || {}).find(function (f) { return f.id === fi.id; });
+          map[fi.id] = {
+            id: fi.id,
+            name: (meta && meta.name) || fi.name || null,
+            seq: (meta && meta.sequence != null) ? meta.sequence : (fi.sequence != null ? fi.sequence : 0),
+            count: 0,
+          };
+        }
+        map[fi.id].count++;
+      }
+    });
+    return Object.values(map).sort(function (a, b) { return a.seq - b.seq; });
+  }
+
+  function _currentFloorId() {
+    const s = currentSweepUuid && allSweepData[currentSweepUuid];
+    return (s && s.floorInfo && s.floorInfo.id != null) ? s.floorInfo.id : null;
+  }
+
+  function _sweepFloorId(uuid, sweepObj) {
+    const a = allSweepData[uuid];
+    if (a && a.floorInfo && a.floorInfo.id != null) return a.floorInfo.id;
+    if (sweepObj && sweepObj.floorInfo && sweepObj.floorInfo.id != null) return sweepObj.floorInfo.id;
+    return null;
+  }
+
+  // sweeps with a position on a given floor (null = every floor)
+  function _getFloorSweeps(floorId) {
+    return Object.entries(allSweepData)
+      .filter(function (_a) { var s = _a[1]; return s && s.position; })
+      .map(function (_a) { return Object.assign({ id: _a[0] }, _a[1]); })
+      .filter(function (s) {
+        if (floorId === null || floorId === undefined) return true;
+        return s.floorInfo && String(s.floorInfo.id) === String(floorId);
+      });
+  }
+
+  function _updateAutoTagCount() {
+    if (autoTagCountEl) autoTagCountEl.textContent = autoTagSelected.size + " selected";
+  }
+
+  function renderAutoTagCanvas() {
+    if (!autoTagCanvas) return;
+    const ctx = autoTagCanvas.getContext("2d");
+    const W = autoTagCanvas.width, H = autoTagCanvas.height;
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "#fafafa"; ctx.fillRect(0, 0, W, H);
+
+    const sweeps = _getFloorSweeps(autoTagViewFloorId);
+    _autoTagHit = [];
+    if (!sweeps.length) {
+      ctx.fillStyle = "rgba(0,0,0,0.4)";
+      ctx.font = "13px Inter, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("Floor plan still loading — walk around a bit, then reopen.", W / 2, H / 2);
+      _updateAutoTagCount();
+      return;
+    }
+
+    const proj = _computeProjection(sweeps, W, H, 30);
+
+    // neighbour edges (only within this floor → no cross-floor clutter)
+    ctx.strokeStyle = "rgba(0,0,0,0.08)";
+    ctx.lineWidth = 1;
+    const drawn = {};
+    sweeps.forEach(function (s) {
+      if (!s.neighbors) return;
+      const from = proj.toCanvas(s.position);
+      s.neighbors.forEach(function (nid) {
+        const key = s.id < nid ? s.id + "|" + nid : nid + "|" + s.id;
+        if (drawn[key]) return; drawn[key] = true;
+        const ns = allSweepData[nid];
+        if (!ns || !ns.position) return;
+        if (String((ns.floorInfo || {}).id) !== String((s.floorInfo || {}).id)) return;
+        const to = proj.toCanvas(ns.position);
+        ctx.beginPath(); ctx.moveTo(from.x, from.y); ctx.lineTo(to.x, to.y); ctx.stroke();
+      });
+    });
+
+    // sweep dots
+    sweeps.forEach(function (s) {
+      const pt = proj.toCanvas(s.position);
+      const tagged = !!taggedSweepMap[s.id];
+      const selected = autoTagSelected.has(s.id);
+      const isCurrent = s.id === currentSweepUuid;
+      ctx.beginPath(); ctx.arc(pt.x, pt.y, selected ? 7 : 6, 0, Math.PI * 2);
+      ctx.fillStyle = tagged ? "#c7c7cc" : (selected ? "#0070f3" : "#ffffff");
+      ctx.fill();
+      ctx.lineWidth = selected ? 2.5 : 1.3;
+      ctx.strokeStyle = tagged ? "#a0a0a5" : (selected ? "#0a4fb0" : "#7a7a7a");
+      ctx.stroke();
+      if (isCurrent) {
+        ctx.beginPath(); ctx.arc(pt.x, pt.y, 11, 0, Math.PI * 2);
+        ctx.strokeStyle = "#16a34a"; ctx.lineWidth = 2; ctx.stroke();
+      }
+      if (!tagged) _autoTagHit.push({ uuid: s.id, x: pt.x, y: pt.y });
+    });
+
+    _updateAutoTagCount();
+  }
+
+  if (autoTagCanvas) {
+    autoTagCanvas.addEventListener("click", function (e) {
+      const rect = autoTagCanvas.getBoundingClientRect();
+      const x = (e.clientX - rect.left) * (autoTagCanvas.width / rect.width);
+      const y = (e.clientY - rect.top) * (autoTagCanvas.height / rect.height);
+      let best = null, bestD = 16 * 16;
+      _autoTagHit.forEach(function (h) {
+        const dx = h.x - x, dy = h.y - y, d = dx * dx + dy * dy;
+        if (d < bestD) { bestD = d; best = h; }
+      });
+      if (best) {
+        if (autoTagSelected.has(best.uuid)) autoTagSelected.delete(best.uuid);
+        else autoTagSelected.add(best.uuid);
+        renderAutoTagCanvas();
+      }
+    });
+  }
+
+  function _populateAutoTagFloors() {
+    const floors = _detectFloors();
+    if (!autoTagViewFloor) return floors;
+    autoTagViewFloor.innerHTML = "";
+    if (floors.length === 0) {
+      autoTagViewFloorId = null;
+      const opt = document.createElement("option");
+      opt.value = ""; opt.textContent = "All sweeps";
+      autoTagViewFloor.appendChild(opt);
+      autoTagViewFloor.style.display = "none";
+      return floors;
+    }
+    autoTagViewFloor.style.display = floors.length > 1 ? "" : "none";
+    const curId = _currentFloorId();
+    floors.forEach(function (f) {
+      const opt = document.createElement("option");
+      opt.value = String(f.id);
+      opt.textContent = _floorDisplayName(f) + " (" + f.count + ")";
+      autoTagViewFloor.appendChild(opt);
+    });
+    autoTagViewFloorId = (curId != null) ? curId : floors[0].id;
+    autoTagViewFloor.value = String(autoTagViewFloorId);
+    return floors;
+  }
+
+  function openAutoTagFloorplan() {
+    if (!autoTagFp) { autoTagLocations(null); return; }
+    autoTagSelected.clear();
+    _populateAutoTagFloors();
+    renderAutoTagCanvas();
+    autoTagFp.style.display = "flex";
+  }
+  function closeAutoTagFloorplan() { if (autoTagFp) autoTagFp.style.display = "none"; }
+
+  if (autoTagViewFloor) autoTagViewFloor.addEventListener("change", function () {
+    const v = autoTagViewFloor.value;
+    autoTagViewFloorId = v === "" ? null : v;
+    renderAutoTagCanvas();
+  });
+  if (autoTagSelectAllBtn) autoTagSelectAllBtn.addEventListener("click", function () {
+    _getFloorSweeps(autoTagViewFloorId).forEach(function (s) {
+      if (!taggedSweepMap[s.id]) autoTagSelected.add(s.id);
+    });
+    renderAutoTagCanvas();
+  });
+  if (autoTagClearBtn) autoTagClearBtn.addEventListener("click", function () {
+    autoTagSelected.clear(); renderAutoTagCanvas();
+  });
+  if (autoTagRunSelBtn) autoTagRunSelBtn.addEventListener("click", function () {
+    if (!autoTagSelected.size) { appendLine("system", "Select at least one sweep, or use “Tag every sweep”."); return; }
+    const list = Array.from(autoTagSelected);
+    closeAutoTagFloorplan();
+    autoTagLocations(list);
+  });
+  if (autoTagRunAllBtn) autoTagRunAllBtn.addEventListener("click", function () {
+    closeAutoTagFloorplan(); autoTagLocations(null);
+  });
+  if (autoTagFpCancelBtn) autoTagFpCancelBtn.addEventListener("click", closeAutoTagFloorplan);
+  if (autoTagFpCloseBtn) autoTagFpCloseBtn.addEventListener("click", closeAutoTagFloorplan);
+  if (autoTagFp) autoTagFp.addEventListener("click", function (e) {
+    if (e.target === autoTagFp) closeAutoTagFloorplan();
+  });
 
   if (scanLocationSelect && scanAreaNameInput) {
     scanLocationSelect.addEventListener("change", function () {
@@ -1660,14 +2088,16 @@
           const absoluteAngle = bestView ? bestView.absolute_angle : null;
           const viewSweep     = bestView ? (bestView.sweep_uuid || null) : null;
           const instanceCount = editedCounts[assetName] || 1;
-          // tightBboxCache[name] is a plain [x1,y1,x2,y2] or null for the primary detection
-          const primaryBbox   = tightBboxCache[assetName] || null;
+          // Each instance keeps its OWN YOLO box so every asset has a precise
+          // location/highlight. Instances beyond the detected boxes (e.g. count
+          // edited up) fall back to null and share the view angle.
+          const instBoxes = (instanceBboxCache[assetName] && instanceBboxCache[assetName].boxes) || [];
 
           const instances = [];
           for (let i = 0; i < instanceCount; i++) {
             instances.push({
               serial:     i + 1,
-              bbox:       i === 0 ? primaryBbox : null,  // only #1 has a precise position
+              bbox:       instBoxes[i] || null,
               angle:      absoluteAngle,
               sweep_uuid: viewSweep,
             });
@@ -1736,10 +2166,159 @@
     });
   }
 
-  // ── "Show Scanned Assets" button ─────────────────────────────────────────
+  // ── In-chat Scanned Inventory ─────────────────────────────────────────────
+  const scannedInChatEl    = document.getElementById("scanned-in-chat");
+  const scannedInChatBody  = document.getElementById("scanned-in-chat-body");
+  const scannedInChatClose = document.getElementById("scanned-in-chat-close");
+  let   scannedInChatOpen  = false;
+
+  async function openScannedInChat() {
+    if (!scannedInChatEl) return;
+    scannedInChatEl.style.display = "flex";
+    scannedInChatOpen = true;
+    const btn = document.getElementById("show-scanned-btn");
+    if (btn) { btn.style.color = "var(--accent-primary)"; var _l = document.getElementById("show-scanned-label"); if (_l) _l.textContent = "Hide Scanned"; }
+
+    if (!scannedInChatBody) return;
+    scannedInChatBody.innerHTML = '<div class="ap-empty">Loading…</div>';
+    try {
+      const res  = await fetch(`/api/spaces/${mapId}/assets-panel`, { credentials: "same-origin" });
+      const data = await res.json().catch(() => ({ ok: false }));
+      if (!data.ok) throw new Error(data.error || "Failed to load");
+      _renderScannedInChatBody(data.scan_summaries || []);
+    } catch (err) {
+      scannedInChatBody.innerHTML = `<div class="ap-empty" style="color:var(--danger);">Error: ${err.message}</div>`;
+    }
+  }
+
+  function closeScannedInChat() {
+    if (scannedInChatEl) scannedInChatEl.style.display = "none";
+    scannedInChatOpen = false;
+    const btn = document.getElementById("show-scanned-btn");
+    if (btn) { btn.style.color = ""; var _l = document.getElementById("show-scanned-label"); if (_l) _l.textContent = "Scanned"; }
+  }
+
+  function _renderScannedInChatBody(summaries) {
+    if (!scannedInChatBody) return;
+
+    const areaMap = {};
+    summaries.forEach(s => {
+      const area = s.area_name || "Unspecified";
+      if (!areaMap[area]) areaMap[area] = [];
+      areaMap[area].push(s);
+    });
+    const areas = Object.keys(areaMap).sort();
+
+    if (!areas.length) {
+      scannedInChatBody.innerHTML = '<div class="ap-empty">No scanned inventory yet. Use <strong>📷 Scan Area</strong>.</div>';
+      return;
+    }
+
+    scannedInChatBody.innerHTML = `
+      <div id="sic-area-chips" class="ap-area-chips">
+        ${areas.map(a => `<button type="button" class="ap-area-chip" data-area="${a}">
+          ${a}<span class="ap-count">${areaMap[a].length}</span>
+        </button>`).join("")}
+      </div>
+      <div id="sic-detail" style="display:none;">
+        <button type="button" id="sic-back" class="btn ghost small" style="margin-bottom:0.5rem; width:100%;">← Back to areas</button>
+        <div id="sic-detail-rows"></div>
+      </div>`;
+
+    const areaChipsEl   = scannedInChatBody.querySelector("#sic-area-chips");
+    const sicDetail     = scannedInChatBody.querySelector("#sic-detail");
+    const sicDetailRows = scannedInChatBody.querySelector("#sic-detail-rows");
+    const sicBack       = scannedInChatBody.querySelector("#sic-back");
+
+    function showSicDetail(area) {
+      if (!sicDetailRows) return;
+      const rowsByAsset = {};
+      (areaMap[area] || []).forEach(s => {
+        if (!rowsByAsset[s.asset_name]) rowsByAsset[s.asset_name] = [];
+        rowsByAsset[s.asset_name].push(s);
+      });
+      const canNav = s => s.sweep_uuid && s.best_angle !== null && s.best_angle !== undefined;
+      const bboxAttr = s => s.bbox ? JSON.stringify(s.bbox) : "null";
+
+      sicDetailRows.innerHTML = Object.entries(rowsByAsset).map(([assetName, rows]) => {
+        rows.sort((a, b) => (a.serial_number || 1) - (b.serial_number || 1));
+        const totalCount = rows.reduce((sum, r) => sum + (r.count || 1), 0);
+        const isLegacy = rows.length === 1 && !rows[0].serial_number;
+
+        if (isLegacy) {
+          const s = rows[0];
+          return `<div class="ap-asset-group"><div class="ap-row">
+            <div class="ap-row-info"><span class="ap-row-label" style="text-transform:capitalize;">${assetName}</span></div>
+            <div class="ap-row-actions">
+              <span class="ap-count">${totalCount}</span>
+              ${canNav(s) ? `<button type="button" class="btn small secondary ap-highlight-btn"
+                data-name="${assetName}" data-sweep="${s.sweep_uuid}"
+                data-angle="${s.best_angle}" data-bbox='${bboxAttr(s)}' title="Show in space">🔆</button>` : ""}
+            </div>
+          </div></div>`;
+        }
+
+        const subRows = rows.map(s => {
+          const label = `${assetName.charAt(0).toUpperCase() + assetName.slice(1)} #${s.serial_number || 1}`;
+          return `<div class="ap-row ap-serial-row">
+            <div class="ap-row-info"><span class="ap-row-label ap-serial-label">${label}</span></div>
+            <div class="ap-row-actions">
+              ${canNav(s)
+                ? `<button type="button" class="btn small secondary ap-highlight-btn"
+                    data-name="${assetName}" data-sweep="${s.sweep_uuid}"
+                    data-angle="${s.best_angle}" data-bbox='${bboxAttr(s)}'
+                    data-serial="${s.serial_number || 1}" title="Show in space">🔆</button>`
+                : `<span class="ap-no-loc" title="Location not recorded">—</span>`}
+            </div>
+          </div>`;
+        }).join("");
+
+        return `<div class="ap-asset-group">
+          <div class="ap-asset-group-header">
+            <span style="text-transform:capitalize; font-weight:600;">${assetName}</span>
+            <span class="ap-count">${totalCount}</span>
+          </div>${subRows}</div>`;
+      }).join("");
+
+      sicDetailRows.querySelectorAll(".ap-highlight-btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const sweepUuid = btn.dataset.sweep;
+          const angle     = parseFloat(btn.dataset.angle);
+          const bbox      = JSON.parse(btn.dataset.bbox);
+          const assetName = btn.dataset.name;
+          await handleNavigate(sweepUuid);
+          await sleep(1200);
+          try { await rotateToYawAtCurrentSweep(angle, 0); } catch (_) {}
+          if (scanHighlightOverlay) scanHighlightOverlay.style.display = "block";
+          showHighlightOverlay(assetName, bbox);
+        });
+      });
+
+      if (areaChipsEl) areaChipsEl.style.display = "none";
+      if (sicDetail) sicDetail.style.display = "";
+    }
+
+    scannedInChatBody.querySelectorAll(".ap-area-chip").forEach(btn => {
+      btn.addEventListener("click", () => showSicDetail(btn.dataset.area));
+    });
+
+    if (sicBack) {
+      sicBack.addEventListener("click", () => {
+        if (areaChipsEl) areaChipsEl.style.display = "";
+        if (sicDetail)   sicDetail.style.display = "none";
+      });
+    }
+  }
+
+  if (scannedInChatClose) {
+    scannedInChatClose.addEventListener("click", closeScannedInChat);
+  }
+
   const showScannedBtn = document.getElementById("show-scanned-btn");
   if (showScannedBtn) {
-    showScannedBtn.addEventListener("click", function () { toggleScanTags(); });
+    showScannedBtn.addEventListener("click", function () {
+      if (scannedInChatOpen) closeScannedInChat(); else openScannedInChat();
+    });
   }
 
   loadScanLocations();
@@ -2004,7 +2583,8 @@
           const bbox       = JSON.parse(btn.dataset.bbox);
           const assetName  = btn.dataset.name;
 
-          closeAssetsPanel();
+          // Keep the Assets panel open so multiple items can be highlighted
+          // without re-opening Assets → location → item each time.
           await handleNavigate(sweepUuid);
           await sleep(1200);
           try { await rotateToYawAtCurrentSweep(angle, 0); } catch (_) {}
@@ -2158,8 +2738,8 @@
   };
 
   function getCategoryColor(category) {
-    if (!category) return "#10a37f";
-    return CATEGORY_COLORS[category.toLowerCase()] || "#10a37f";
+    if (!category) return "#0070f3";
+    return CATEGORY_COLORS[category.toLowerCase()] || "#0070f3";
   }
 
   function _updateSweepDisplay() {
@@ -2223,7 +2803,7 @@
     // Neighbor edges (subtle path lines)
     var drawnEdges = {};
     ctx.save();
-    ctx.strokeStyle = "rgba(255,255,255,0.07)";
+    ctx.strokeStyle = "rgba(0,0,0,0.10)";
     ctx.lineWidth   = Math.max(0.5, dotR * 0.25);
     sweeps.forEach(function (s) {
       if (!s.neighbors) return;
@@ -2258,8 +2838,8 @@
           ctx.save();
           ctx.font        = "600 " + labelPx + "px Inter,sans-serif";
           ctx.textAlign   = "center";
-          ctx.fillStyle   = "#ffffff";
-          ctx.shadowColor = "rgba(0,0,0,0.9)";
+          ctx.fillStyle   = "#111111";
+          ctx.shadowColor = "rgba(255,255,255,0.95)";
           ctx.shadowBlur  = 4;
           ctx.fillText(lbl, pt.x, pt.y - dotR * 1.5 - 3);
           ctx.restore();
@@ -2267,7 +2847,7 @@
       } else {
         ctx.beginPath();
         ctx.arc(pt.x, pt.y, dotR, 0, Math.PI * 2);
-        ctx.fillStyle = "rgba(255,255,255,0.22)";
+        ctx.fillStyle = "rgba(0,0,0,0.22)";
         ctx.fill();
       }
     });
@@ -2278,11 +2858,11 @@
       var pulseR = dotR * 2.8 + minimapPulse * dotR * 2.5;
       ctx.beginPath();
       ctx.arc(pt2.x, pt2.y, pulseR, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(16,163,127," + (0.28 * (1 - minimapPulse)) + ")";
+      ctx.fillStyle = "rgba(0,112,243," + (0.28 * (1 - minimapPulse)) + ")";
       ctx.fill();
       ctx.beginPath();
       ctx.arc(pt2.x, pt2.y, dotR * 2, 0, Math.PI * 2);
-      ctx.fillStyle = "#10a37f";
+      ctx.fillStyle = "#0070f3";
       ctx.fill();
       ctx.beginPath();
       ctx.arc(pt2.x, pt2.y, dotR, 0, Math.PI * 2);
@@ -2397,16 +2977,16 @@
     ctx.clearRect(0, 0, W, H);
 
     if (!sweeps.length) {
-      ctx.fillStyle = "rgba(13,17,26,0.95)";
+      ctx.fillStyle = "#fafafa";
       ctx.fillRect(0, 0, W, H);
-      ctx.fillStyle = "rgba(255,255,255,0.3)";
+      ctx.fillStyle = "rgba(0,0,0,0.4)";
       ctx.font = "11px sans-serif";
       ctx.textAlign = "center";
       ctx.fillText("Waiting for SDK data…", W / 2, H / 2);
       return;
     }
 
-    ctx.fillStyle = "rgba(13,17,26,0.95)";
+    ctx.fillStyle = "#fafafa";
     ctx.fillRect(0, 0, W, H);
 
     var proj = _computeProjection(sweeps, W, H, 20);
@@ -2419,7 +2999,7 @@
       var floorName = currentFloorId !== null
         ? (floorDataMap[Object.keys(floorDataMap).find(function (k) { return floorDataMap[k].id === currentFloorId; })] || {}).name || ("Floor " + currentFloorId)
         : "All floors";
-      ctx.fillStyle = "rgba(255,255,255,0.35)";
+      ctx.fillStyle = "rgba(0,0,0,0.4)";
       ctx.font = "8px sans-serif";
       ctx.textAlign = "left";
       ctx.fillText(floorName, 5, H - 5);
@@ -2530,6 +3110,14 @@
           floorDataMap = {};
           Object.entries(floorMap || {}).forEach(function (_a) { floorDataMap[_a[0]] = _a[1]; });
           _populateFloorSelect(floorDataMap);
+          // Default the minimap to a single floor so stacked floors don't overlap.
+          if (currentFloorId === null && Object.keys(floorDataMap).length > 1) {
+            var cur = _currentFloorId();
+            if (cur != null) {
+              currentFloorId = cur;
+              if (minimapFloorSel) minimapFloorSel.value = String(cur);
+            }
+          }
         });
       }
     } catch (e) { console.warn("[3DAgent Minimap] Floor.data subscribe failed:", e); }
@@ -2571,6 +3159,12 @@
     minimapExportBtn.addEventListener("click", function () { openExportModal(); });
   }
 
+  // Open export modal from the tools rail
+  var exportPlanBtn = document.getElementById("export-plan-btn");
+  if (exportPlanBtn) {
+    exportPlanBtn.addEventListener("click", function () { openExportModal(); });
+  }
+
   // Close export modal
   if (exportModalClose) {
     exportModalClose.addEventListener("click", function () {
@@ -2597,18 +3191,18 @@
     ctx.clearRect(0, 0, W, H);
 
     // Background
-    ctx.fillStyle = "#0d111a";
+    ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, W, H);
 
     var HEADER = 64, FOOTER = 48;
 
     if (!sweeps.length) {
-      ctx.fillStyle = "rgba(255,255,255,0.4)";
+      ctx.fillStyle = "rgba(0,0,0,0.5)";
       ctx.font = "18px Inter,sans-serif";
       ctx.textAlign = "center";
       ctx.fillText("No floor plan data available yet.", W / 2, H / 2 - 10);
       ctx.font = "13px Inter,sans-serif";
-      ctx.fillStyle = "rgba(255,255,255,0.25)";
+      ctx.fillStyle = "rgba(0,0,0,0.35)";
       ctx.fillText("Navigate the space first so the SDK loads sweep positions.", W / 2, H / 2 + 16);
     } else {
       // Compute projection into the body area (below header, above footer)
@@ -2638,7 +3232,7 @@
           ctx.arc(lx + 5, ly, 5, 0, Math.PI * 2);
           ctx.fillStyle = getCategoryColor(cat);
           ctx.fill();
-          ctx.fillStyle = "rgba(255,255,255,0.65)";
+          ctx.fillStyle = "rgba(0,0,0,0.6)";
           ctx.fillText(cat, lx + 14, ly + 4);
           lx += ctx.measureText(cat).width + 32;
         });
@@ -2646,13 +3240,13 @@
     }
 
     // Header title
-    ctx.fillStyle = "#ffffff";
+    ctx.fillStyle = "#111111";
     ctx.font = "bold 20px Inter,sans-serif";
     ctx.textAlign = "center";
     ctx.fillText("Annotated Floor Plan", W / 2, 36);
 
     // Footer timestamp
-    ctx.fillStyle = "rgba(255,255,255,0.35)";
+    ctx.fillStyle = "rgba(0,0,0,0.4)";
     ctx.font = "11px Inter,sans-serif";
     ctx.textAlign = "center";
     ctx.fillText("Generated: " + new Date().toLocaleString(), W / 2, H - 14);
@@ -2861,6 +3455,25 @@
       } else if (data.intent === "navigate" && data.sweep_uuid) {
         appendLine("agent", "Navigating to " + (data.label || "destination") + "…");
         await navigateWithRoute(data.sweep_uuid, data.label || "destination");
+      } else if (data.intent === "navigate_asset" && data.instances?.length) {
+        const nearest = findNearestAssetInstance(data.instances);
+        if (nearest && nearest.sweep_uuid) {
+          const label = nearest.area_name
+            ? `${data.asset_name} in ${nearest.area_name}`
+            : data.asset_name;
+          appendLine("agent", `Navigating to ${label}…`);
+          await navigateWithRoute(nearest.sweep_uuid, label);
+          if (nearest.best_angle != null) {
+            await sleep(1200);
+            try { await rotateToYawAtCurrentSweep(nearest.best_angle, 0); } catch (_) {}
+          }
+          if (nearest.bbox_json) {
+            if (scanHighlightOverlay) scanHighlightOverlay.style.display = "block";
+            showHighlightOverlay(data.asset_name, nearest.bbox_json);
+          }
+        } else {
+          appendLine("agent", `Found ${data.instances.length} ${data.asset_name}(s) but no location data is saved. Use the Assets panel to navigate manually.`);
+        }
       } else if (data.response) {
         appendLine("agent", data.response);
       } else {

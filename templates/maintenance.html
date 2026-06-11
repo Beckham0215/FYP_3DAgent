@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% block title %}Maintenance · 3DAgent{% endblock %}
+{% block content %}
+
+{% set status_labels = {'open': 'Open', 'assigned': 'Assigned', 'in_progress': 'In Progress', 'resolved': 'Resolved'} %}
+
+<div class="page-header">
+  <div class="page-title">
+    <h1>🛠️ Maintenance Reports</h1>
+    <p>
+      {% if is_admin %}
+        Triage reported equipment issues and dispatch mechanics by priority.
+      {% else %}
+        Issues you've reported. An admin reviews these and assigns a mechanic.
+      {% endif %}
+    </p>
+  </div>
+  <div class="page-header-actions">
+    <span class="role-pill {{ 'role-pill--admin' if is_admin else '' }}">
+      {{ 'Admin' if is_admin else 'Worker' }}
+    </span>
+  </div>
+</div>
+
+<div class="page-main">
+
+  <!-- Summary stats -->
+  <div class="maint-stats space-lg">
+    <div class="stat-box">
+      <span class="stat-box-num">{{ stats.total }}</span>
+      <span class="stat-box-label">Total</span>
+    </div>
+    <div class="stat-box stat-box--open">
+      <span class="stat-box-num">{{ stats.open }}</span>
+      <span class="stat-box-label">Open</span>
+    </div>
+    <div class="stat-box stat-box--assigned">
+      <span class="stat-box-num">{{ stats.assigned }}</span>
+      <span class="stat-box-label">In Progress</span>
+    </div>
+    <div class="stat-box stat-box--critical">
+      <span class="stat-box-num">{{ stats.critical }}</span>
+      <span class="stat-box-label">Critical Open</span>
+    </div>
+    <div class="stat-box stat-box--resolved">
+      <span class="stat-box-num">{{ stats.resolved }}</span>
+      <span class="stat-box-label">Resolved</span>
+    </div>
+  </div>
+
+  <!-- Filters -->
+  <div class="filter-bar space-lg">
+    <div class="filter-group">
+      <span class="filter-group-label">Status</span>
+      <a href="{{ url_for('maintenance.maintenance', severity=severity_filter or None) }}"
+         class="filter-chip {{ 'active' if not status_filter else '' }}">All</a>
+      {% for st in ['open', 'assigned', 'in_progress', 'resolved'] %}
+        <a href="{{ url_for('maintenance.maintenance', status=st, severity=severity_filter or None) }}"
+           class="filter-chip {{ 'active' if status_filter == st else '' }}">{{ status_labels[st] }}</a>
+      {% endfor %}
+    </div>
+    <div class="filter-group">
+      <span class="filter-group-label">Severity</span>
+      <a href="{{ url_for('maintenance.maintenance', status=status_filter or None) }}"
+         class="filter-chip {{ 'active' if not severity_filter else '' }}">All</a>
+      {% for sv in ['critical', 'high', 'medium', 'low'] %}
+        <a href="{{ url_for('maintenance.maintenance', severity=sv, status=status_filter or None) }}"
+           class="filter-chip {{ 'active' if severity_filter == sv else '' }}">{{ sv|capitalize }}</a>
+      {% endfor %}
+    </div>
+  </div>
+
+  {% if reports %}
+    <div class="report-list">
+      {% for r in reports %}
+      {% set space = spaces.get(r.map_id) %}
+      <div class="report-card sev-border-{{ r.severity }} {{ 'report-card--resolved' if r.status == 'resolved' else '' }}">
+
+        <div class="report-card-main">
+          <div class="report-card-head">
+            <span class="severity-badge sev-{{ r.severity }}">{{ r.severity|capitalize }}</span>
+            <span class="status-pill st-{{ r.status }}">{{ status_labels.get(r.status, r.status) }}</span>
+            <span class="report-time">{{ r.created_at.strftime('%b %d, %Y · %H:%M') if r.created_at else '' }}</span>
+          </div>
+
+          <h3 class="report-equipment">{{ r.equipment_name }}</h3>
+          {% if r.description %}
+            <p class="report-desc">{{ r.description }}</p>
+          {% endif %}
+
+          <div class="report-meta">
+            <span class="report-meta-item">🏢 {{ space.map_name if space else 'Space #' ~ r.map_id }}</span>
+            {% if r.area_name %}
+              <span class="report-meta-item">📍 {{ r.area_name }}</span>
+            {% elif r.sweep_uuid %}
+              <span class="report-meta-item" title="{{ r.sweep_uuid }}">📍 {{ r.sweep_uuid[:10] }}…</span>
+            {% endif %}
+            <span class="report-meta-item">👤 {{ r.reporter_name or 'Unknown' }}</span>
+            {% if r.assigned_to %}
+              <span class="report-meta-item report-meta-mechanic">🔧 {{ r.assigned_to }}</span>
+            {% endif %}
+          </div>
+
+          {% if r.sweep_uuid and space %}
+            <a class="report-locate-link"
+               href="{{ url_for('main.viewer', map_id=r.map_id) }}?goto={{ r.sweep_uuid }}"
+               target="_blank" rel="noopener">↗ Open location in 3D viewer</a>
+          {% endif %}
+        </div>
+
+        <!-- Management controls -->
+        <div class="report-card-actions">
+          {% if can_manage %}
+            <form method="post" action="{{ url_for('maintenance.assign_report', report_id=r.id) }}" class="assign-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="text" name="assigned_to" placeholder="Mechanic name"
+                     value="{{ r.assigned_to or '' }}" autocomplete="off">
+              <button type="submit" class="btn small primary" title="Assign mechanic">🔧 Assign</button>
+            </form>
+
+            <form method="post" action="{{ url_for('maintenance.update_status', report_id=r.id) }}" class="status-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <select name="status" onchange="this.form.submit()" aria-label="Change status">
+                {% for st in ['open', 'assigned', 'in_progress', 'resolved'] %}
+                  <option value="{{ st }}" {{ 'selected' if r.status == st else '' }}>{{ status_labels[st] }}</option>
+                {% endfor %}
+              </select>
+            </form>
+          {% endif %}
+
+          <form method="post" action="{{ url_for('maintenance.delete_report', report_id=r.id) }}"
+                onsubmit="return confirm('Delete this maintenance report?');" style="margin-left:auto;">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn small danger" title="Delete report">🗑️</button>
+          </form>
+        </div>
+
+      </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="card empty">
+      <div class="card-empty-icon">🛠️</div>
+      <h2 style="margin-top:0;">No maintenance reports</h2>
+      <p class="text-secondary" style="margin-bottom:0;">
+        {% if status_filter or severity_filter %}
+          No reports match the current filters.
+          <a href="{{ url_for('maintenance.maintenance') }}">Clear filters</a>.
+        {% else %}
+          Open a space in the 3D viewer and use <strong>⚠ Report Issue</strong> on the tools rail
+          to pin equipment that needs maintenance.
+        {% endif %}
+      </p>
+    </div>
+  {% endif %}
+
+</div>
+{% endblock %}

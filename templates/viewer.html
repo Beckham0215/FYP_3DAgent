@@ -19,8 +19,11 @@
     <div id="slo-badges" class="slo-badges"></div>
   </div>
 
-  <!-- Highlight Overlay (Feature 2) — positioned marker at detected object location -->
+  <!-- Highlight Overlay (Feature 2) — edge-fitting outline (SVG) with box fallback -->
   <div id="scan-highlight-overlay" style="display:none;">
+    <svg id="sho-svg" viewBox="0 0 1 1" preserveAspectRatio="none" style="display:none;">
+      <polygon id="sho-poly" points=""></polygon>
+    </svg>
     <div class="sho-marker" id="sho-marker" style="display:none;"></div>
     <div class="sho-label" id="sho-label"></div>
     <button type="button" class="sho-dismiss" id="sho-dismiss">&#xd7; Exit highlight</button>
@@ -38,21 +41,137 @@
     <button type="button" id="route-hud-cancel" class="route-hud-cancel" title="Cancel route">✕</button>
   </div>
 
-  <!-- Location Tracker Panel -->
-  <div id="uuid-tracker" class="hud-panel">
-    <div class="panel-header">
-      <strong>📍 Current Location</strong>
-      <div style="display:flex;gap:4px;align-items:center;">
-        <button type="button" id="minimap-open-btn" class="minimap-icon-btn" title="Toggle floor plan map">🗺</button>
-        <button type="button" class="toggle-btn" title="Minimize panel">−</button>
+  <!-- ════════════════════════════════════════════════════
+       Tools menu — a draggable, minimizable dropdown docked
+       top-left. Header click-and-drag to move; − to collapse.
+  ════════════════════════════════════════════════════ -->
+  <aside id="tools-menu" class="hud-panel tools-menu" aria-label="Viewer tools">
+    <div class="panel-header tools-menu-header">
+      <strong>🧰 Tools</strong>
+      <button type="button" class="toggle-btn" title="Minimize panel" aria-label="Minimize tools">−</button>
+    </div>
+    <div class="panel-body tools-menu-body">
+
+      <div class="toolbar-loc">
+        <span class="toolbar-loc-label">Current location</span>
+        <span id="sweep-display" class="toolbar-loc-value">Detecting location…</span>
       </div>
+
+      <div class="toolbar-divider"></div>
+
+      <button type="button" id="minimap-open-btn" class="tool-btn" title="Toggle floor plan map">
+        <span class="tool-btn-icon">🗺</span><span>Floor Plan</span>
+      </button>
+
+      <button type="button" id="scan-area-btn" class="tool-btn" title="Scan sweeps for assets">
+        <span class="tool-btn-icon">📷</span><span>Scan Area</span>
+      </button>
+
+      <button type="button" id="tag-location-btn" class="tool-btn" title="Tag the current location">
+        <span class="tool-btn-icon">🏷️</span><span>Tag Location</span>
+      </button>
+
+      <button type="button" id="auto-tag-btn" class="tool-btn"
+              title="Automatically navigate every sweep and tag locations using AI vision">
+        <span class="tool-btn-icon">🤖</span><span>Auto-Tag All</span>
+      </button>
+      <div id="auto-tag-status" class="toolbar-status"></div>
+
+      <button type="button" id="assets-panel-open" class="tool-btn" title="View tagged & scanned assets">
+        <span class="tool-btn-icon">📍</span><span>Assets</span>
+      </button>
+
+      <button type="button" id="export-plan-btn" class="tool-btn" title="Export annotated floor plan">
+        <span class="tool-btn-icon">⬇</span><span>Export Plan</span>
+      </button>
+
+      <div class="toolbar-divider"></div>
+
+      <span class="toolbar-section-label">Maintenance</span>
+
+      <button type="button" id="report-issue-btn" class="tool-btn tool-btn--warn"
+              title="Report equipment at this location that needs maintenance">
+        <span class="tool-btn-icon">⚠️</span><span>Report Issue</span>
+      </button>
+
+      <div class="toolbar-divider"></div>
+
+      <a href="{{ url_for('main.dashboard') }}" class="tool-btn" title="Back to dashboard">
+        <span class="tool-btn-icon">←</span><span>Dashboard</span>
+      </a>
     </div>
-    <div class="panel-body">
-      <span id="sweep-display" style="word-break: break-all; font-size: 0.85rem;">Detecting location...</span>
+  </aside>
+
+  <!-- Tag Location popover (opened by the rail's Tag Location button) -->
+  <div id="tag-popover" class="tool-popover" style="display:none;" role="dialog" aria-label="Tag location">
+    <div class="tool-popover-header">
+      <strong>🏷️ Tag this location</strong>
+      <button type="button" id="tag-popover-close" class="toggle-btn" title="Close">✕</button>
     </div>
+    <form id="quick-asset-form">
+      <input
+        type="text"
+        id="quick-asset-name"
+        placeholder="Location name (e.g., Kitchen)"
+        required
+        autocomplete="off"
+      >
+      <input
+        type="text"
+        id="quick-asset-category"
+        placeholder="Category (e.g., Room)"
+        autocomplete="off"
+      >
+      <button type="submit" id="quick-asset-btn" class="btn primary full">✓ Save Location</button>
+    </form>
+    <div id="quick-asset-status" class="toolbar-status"></div>
   </div>
 
-  <!-- Floor Plan Minimap Popup (toggled by 🗺 button above) -->
+  <!-- Report Issue popover (opened by the rail's Report Issue button) -->
+  <div id="report-popover" class="tool-popover" style="display:none;" role="dialog" aria-label="Report maintenance issue">
+    <div class="tool-popover-header">
+      <strong>⚠️ Report an issue</strong>
+      <button type="button" id="report-popover-close" class="toggle-btn" title="Close">✕</button>
+    </div>
+    <form id="report-issue-form">
+      <input type="text" id="report-equipment" placeholder="Equipment (e.g., AC unit, Elevator)" required autocomplete="off">
+      <textarea id="report-description" placeholder="Describe the problem (optional)" rows="3"></textarea>
+      <label class="report-sev-field">
+        <span>Severity</span>
+        <select id="report-severity">
+          <option value="low">🟢 Low — minor / cosmetic</option>
+          <option value="medium" selected>🟡 Medium — needs attention</option>
+          <option value="high">🟠 High — disrupts operation</option>
+          <option value="critical">🔴 Critical — safety / urgent</option>
+        </select>
+      </label>
+      <button type="submit" class="btn primary full">⚠ Submit Report</button>
+    </form>
+    <div id="report-status" class="toolbar-status"></div>
+  </div>
+
+  <!-- Scan Results — its own draggable panel (opens from Scan Area, not the chat) -->
+  <aside id="scan-review-panel" class="hud-panel scan-results-panel" style="display:none;" aria-label="Scan results">
+    <div class="panel-header">
+      <strong>🔍 Scan Results</strong>
+      <button type="button" id="scan-cancel-btn" class="panel-close-btn" title="Close">✕</button>
+    </div>
+    <div class="panel-body">
+      <div class="scan-review-instructions">Click an item to highlight it in the space. Edit counts, then save to a location.</div>
+      <div id="scan-review-list" class="scan-review-list"></div>
+      <div class="scan-modal-location-row">
+        <select id="scan-location-select">
+          <option value="">Select existing location…</option>
+        </select>
+        <input type="text" id="scan-area-name-input" placeholder="Or type new area name…" autocomplete="off">
+      </div>
+      <div class="scan-review-actions">
+        <button type="button" id="scan-save-btn" class="btn success small">✓ Confirm & Save</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Floor Plan Minimap Popup (toggled by the Floor Plan tool) -->
   <div id="minimap-popup" class="minimap-popup" style="display:none;">
     <div class="minimap-header">
       <span class="minimap-title">🗺 Floor Plan</span>
@@ -63,42 +182,6 @@
       </div>
     </div>
     <canvas id="minimap-canvas" width="240" height="240"></canvas>
-  </div>
-
-  <!-- Quick Asset Tagging Panel -->
-  <div id="quick-asset-manager" class="hud-panel">
-    <div class="panel-header">
-      <strong>🏷️ Quick Tag</strong>
-      <button type="button" class="toggle-btn" title="Minimize panel">−</button>
-    </div>
-    <div class="panel-body">
-      <form id="quick-asset-form">
-        <input
-          type="text"
-          id="quick-asset-name"
-          placeholder="Location name (e.g., Kitchen)"
-          required
-          autocomplete="off"
-        >
-        <input
-          type="text"
-          id="quick-asset-category"
-          placeholder="Category (e.g., Room)"
-          autocomplete="off"
-        >
-        <button type="submit" id="quick-asset-btn" class="btn primary">✓ Save Location</button>
-      </form>
-      <div id="quick-asset-status" style="margin-top: 0.5rem;"></div>
-      <hr style="border:none; border-top:1px solid var(--border); margin: 0.6rem 0;">
-      <button
-        type="button"
-        id="auto-tag-btn"
-        class="btn secondary"
-        style="width:100%; font-size:0.8rem;"
-        title="Automatically navigate every sweep and tag locations using AI vision"
-      >🤖 Auto-Tag All Locations</button>
-      <div id="auto-tag-status" style="margin-top:0.4rem; font-size:0.78rem; color:var(--text-muted);"></div>
-    </div>
   </div>
 
   <!-- AI Assistant Chat Panel -->
@@ -119,26 +202,12 @@
 
       <div id="chat-log" class="chat-log" role="log" aria-live="polite" aria-label="Chat messages"></div>
 
-      <!-- Quick-action bar (Scan Area lives here, not in the input row) -->
-      <div class="chat-actions-strip">
-        <button type="button" id="scan-area-btn" class="btn secondary small chat-action-btn" title="Scan sweeps for assets">
-          📷 Scan Area
-        </button>
-      </div>
-
       <!-- Input row: text + mic + send only -->
       <form id="chat-form" class="chat-form">
         <input type="text" id="chat-input" placeholder="Ask me to navigate…" autocomplete="off" aria-label="Chat input">
         <button type="button" id="voice-btn" class="btn icon-btn voice-btn" title="Start voice input" aria-label="Voice input">🎤</button>
         <button type="submit" class="btn primary icon-btn" title="Send">↑</button>
       </form>
-
-      <!-- Footer -->
-      <footer class="chat-footer">
-        <button type="button" id="assets-panel-open" class="btn ghost small" title="View assets">📍 Assets</button>
-        <button type="button" id="show-scanned-btn" class="btn ghost small" title="Toggle scan highlights in 3D space">🏷️ Scanned</button>
-        <a href="{{ url_for('main.dashboard') }}" class="chat-footer-link" title="Back to dashboard">← Dashboard</a>
-      </footer>
     </div>
   </aside>
 
@@ -177,6 +246,31 @@
     </div>
   </aside>
 
+  <!-- Auto-Tag Floor-Plan Selector Modal -->
+  <div id="autotag-floorplan" class="scan-modal-overlay" style="display:none;">
+    <div class="scan-modal-box autotag-modal">
+      <div class="scan-modal-header">
+        <strong>🤖 Auto-Tag — select sweeps</strong>
+        <button type="button" id="autotag-fp-close" class="panel-close-btn" title="Close">✕</button>
+      </div>
+      <div class="autotag-toolbar">
+        <select id="autotag-view-floor" class="minimap-floor-select autotag-floor-tabs"></select>
+        <button type="button" id="autotag-select-all" class="btn ghost small">Select floor</button>
+        <button type="button" id="autotag-clear" class="btn ghost small">Clear</button>
+        <span id="autotag-count" class="autotag-count">0 selected</span>
+      </div>
+      <div class="scan-review-instructions">
+        Click sweeps on the plan to choose which to auto-tag. Grey = already tagged, green ring = your current spot.
+      </div>
+      <canvas id="autotag-canvas" width="560" height="380"></canvas>
+      <div class="autotag-actions">
+        <button type="button" id="autotag-run-selected" class="btn primary small">▶ Tag selected</button>
+        <button type="button" id="autotag-run-all" class="btn secondary small">🌐 Tag every sweep</button>
+        <button type="button" id="autotag-fp-cancel" class="btn ghost small">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Scan Mode Picker Modal -->
   <div id="scan-mode-picker" class="scan-modal-overlay" style="display:none;">
     <div class="scan-modal-box scan-modal-narrow">
@@ -194,29 +288,6 @@
     </div>
   </div>
 
-  <!-- Scan Review Modal -->
-  <div id="scan-review-panel" class="scan-modal-overlay" style="display:none;">
-    <div class="scan-modal-box">
-      <div class="scan-modal-header">
-        <div>
-          <strong>🔍 Scan Results</strong>
-          <div class="scan-review-instructions" style="margin-top:4px;">Review and edit detected items, then save to a location.</div>
-        </div>
-        <button type="button" id="scan-cancel-btn" class="toggle-btn" title="Close">✕</button>
-      </div>
-      <div id="scan-review-list" class="scan-review-list"></div>
-      <div class="scan-modal-location-row">
-        <select id="scan-location-select">
-          <option value="">Select existing location…</option>
-        </select>
-        <input type="text" id="scan-area-name-input" placeholder="Or type new area name…" autocomplete="off">
-      </div>
-      <div class="scan-review-actions">
-        <button type="button" id="scan-save-btn" class="btn success small">✓ Confirm & Save</button>
-      </div>
-    </div>
-  </div>
-
 </div>
 
 <script>
@@ -226,6 +297,53 @@
     spaceId: {{ space.matterport_sid | tojson }},
     sdkKey: {{ matterport_sdk_key | tojson }}
   };
+</script>
+<script>
+  /* @ts-nocheck */
+  /* Rail popovers (Tag Location, Report Issue) — open/close toggles. */
+  (function () {
+    function wirePopover(btnId, popId, closeId, focusId) {
+      var btn   = document.getElementById(btnId);
+      var pop   = document.getElementById(popId);
+      var close = document.getElementById(closeId);
+      if (!btn || !pop) return null;
+
+      function isOpen() { return pop.style.display === "block"; }
+      function openPop() {
+        pop.style.display = "block";
+        btn.classList.add("active");
+        var f = focusId && document.getElementById(focusId);
+        if (f) setTimeout(function () { f.focus(); }, 0);
+      }
+      function closePop() {
+        pop.style.display = "none";
+        btn.classList.remove("active");
+      }
+      var api = { open: openPop, close: closePop, isOpen: isOpen };
+
+      btn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        if (isOpen()) closePop(); else { closeAll(api); openPop(); }
+      });
+      if (close) close.addEventListener("click", closePop);
+      pop.addEventListener("click", function (e) { e.stopPropagation(); });
+      document.addEventListener("click", function (e) {
+        if (isOpen() && !pop.contains(e.target) && e.target !== btn) closePop();
+      });
+      document.addEventListener("keydown", function (e) {
+        if (e.key === "Escape" && isOpen()) closePop();
+      });
+      return api;
+    }
+
+    var popovers = [];
+    function closeAll(except) {
+      popovers.forEach(function (p) { if (p && p !== except) p.close(); });
+    }
+
+    popovers.push(wirePopover("tag-location-btn", "tag-popover", "tag-popover-close", "quick-asset-name"));
+    popovers.push(wirePopover("report-issue-btn", "report-popover", "report-popover-close", "report-equipment"));
+  })();
 </script>
 <script src="{{ url_for('static', filename='js/panel-controls.js') }}"></script>
 <script src="{{ url_for('static', filename='js/viewer.js') }}"></script>

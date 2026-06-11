@@ -45,7 +45,7 @@ def route_intent(user_message: str, asset_labels: list[str], last_queried_area: 
         "- where_am_i: user asks about their current location, which room or area they are in right now (e.g. 'where am I', 'what room is this', 'which location am I in', 'what place is this', 'tell me my current location').\n"
         "- react_query: user has a complex multi-step planning request requiring room suitability verification (e.g. 'I need a meeting room for 10 people', 'find a room that fits 15 people', 'which room has enough chairs for a seminar', 'I need to host a dinner for 8 people', 'set up a conference for 20 attendees').\n"
         "- query_assets: user asks about what assets/items are in a specific room or area (e.g. 'what are the assets in bedroom 1', 'how many closets are in bedroom 1', 'what furniture is in the kitchen', 'list items in living room').\n"
-        "- navigate: user wants to go to a place, room, or tagged sweep (e.g. 'take me to the kitchen', 'go to bedroom').\n"
+        "- navigate: user wants to go to a place, room, tagged sweep, OR a specific physical object/asset (e.g. 'take me to the kitchen', 'go to bedroom', 'bring me to the fire extinguisher', 'navigate to forklift', 'take me to the nearest chair').\n"
         "- visual: user asks about what is visible in the current view, colors, objects, 'what do you see', 'is there a chair', 'describe this view'.\n"
         "- mark_asset: user wants to tag or mark the CURRENT location with a name (e.g. 'mark this as kitchen', 'tag this place as bedroom', 'help me mark this location as office').\n"
         "- activity: user wants to do an activity that requires going to a specific location (e.g. 'I want to cook', 'I want to sleep', 'I need to work').\n"
@@ -56,8 +56,10 @@ def route_intent(user_message: str, asset_labels: list[str], last_queried_area: 
         "- For where_am_i: set all other fields to null. This triggers a database lookup of the user's current location.\n"
         "- For react_query: set all other fields to null. This triggers multi-step agentic reasoning.\n"
         "- For query_assets: extract the room/area name and put it in query_area. If no room is mentioned, use the MEMORY CONTEXT area. Set destination_label and asset_name to null.\n"
-        "- For navigate: set destination_label to the best matching label from the list (case-insensitive match). "
-        "If the list is empty or no reasonable match, set intent to conversational and reply explaining they need to add tagged destinations first.\n"
+        "- For navigate: if the destination is a room or area, set destination_label to the best matching label from the available navigation labels list. "
+        "If the destination is a specific physical object or item type (e.g. 'fire extinguisher', 'forklift', 'first aid kit', 'fire hose', 'chair'), "
+        "ALWAYS use navigate intent and set destination_label to the object name as given — even if it is not in the navigation labels list. "
+        "Only fall back to conversational if the destination is completely unclear.\n"
         "- For mark_asset: extract the asset name (e.g., 'Kitchen', 'Bedroom') and put it in asset_name. Set destination_label to null.\n"
         "- For activity: determine the required location (e.g., 'cook' -> 'kitchen'), then strictly match it against the 'Available navigation labels' provided above. Put the closest matching available label in destination_label.\n"
         "- For visual, conversational, or mark_asset: destination_label must be null unless it's activity or query_assets.\n"
@@ -225,11 +227,24 @@ def parse_groq_vision_response(text: str) -> dict:
 
 
 def detect_objects_from_image(image_b64: str, area_context: str | None = None) -> dict:
-    """
-    Use Groq vision (Llama 4 Scout) to detect and count objects CLOSE to the camera.
-    Uses the reliable comma-separated text format so the model returns the full object list.
-    area_context: optional room name to help the model filter relevant objects.
-    """
+    if not image_b64:
+        return {}
+    if not current_app.config.get("CV_ENABLED", True):
+        return _scout_detect_objects(image_b64, area_context)
+    try:
+        from app.services import cv_service
+        result = cv_service.detect_objects_from_image(image_b64, area_context)
+        if result:
+            return result
+        current_app.logger.warning("[CV] YOLO returned empty, falling back to Scout")
+    except Exception as e:
+        current_app.logger.warning(f"[CV] YOLO failed ({e}), falling back to Scout")
+    if not current_app.config.get("CV_FALLBACK_TO_SCOUT", True):
+        return {}
+    return _scout_detect_objects(image_b64, area_context)
+
+
+def _scout_detect_objects(image_b64: str, area_context: str | None = None) -> dict:
     if not image_b64:
         return {}
 
@@ -281,17 +296,46 @@ def detect_objects_from_image(image_b64: str, area_context: str | None = None) -
 
 
 def detect_objects_from_image_with_positions(image_b64: str, area_context: str | None = None) -> dict:
-    """Thin wrapper — scan flow only needs counts; positions fetched on-demand via locate_object_in_image."""
+    """Return counts AND bounding boxes in one YOLO pass so the scan flow gets
+    instant highlight data with no extra model call. Falls back to counts-only
+    (empty positions) if the CV path is disabled or fails."""
+    if not image_b64:
+        return {"counts": {}, "positions": {}}
+    if current_app.config.get("CV_ENABLED", True):
+        try:
+            from app.services import cv_service
+            result = cv_service.detect_objects_with_boxes(image_b64, area_context)
+            if result.get("counts"):
+                return {
+                    "counts": result["counts"],
+                    "positions": result.get("boxes", {}),
+                    "positions_all": result.get("boxes_all", {}),
+                }
+        except Exception as e:
+            current_app.logger.warning(f"[CV] detect_with_boxes failed ({e}), falling back to counts-only")
     counts = detect_objects_from_image(image_b64, area_context)
-    return {"counts": counts, "positions": {}}
+    return {"counts": counts, "positions": {}, "positions_all": {}}
 
 
 def locate_object_in_image(image_b64: str, object_name: str) -> list | None:
-    """
-    Ask the vision model for a tight bounding box of one specific object in the image.
-    Returns [x1, y1, x2, y2] normalized 0–1, or None if the object is not visible.
-    Called on-demand when the user clicks an asset name in the review panel.
-    """
+    if not image_b64 or not object_name:
+        return None
+    if not current_app.config.get("CV_ENABLED", True):
+        return _scout_locate_object(image_b64, object_name)
+    try:
+        from app.services import cv_service
+        result = cv_service.locate_object_in_image(image_b64, object_name)
+        if result:
+            return result
+        current_app.logger.warning(f"[CV] DINO found no bbox for '{object_name}', falling back to Scout")
+    except Exception as e:
+        current_app.logger.warning(f"[CV] DINO failed ({e}), falling back to Scout")
+    if not current_app.config.get("CV_FALLBACK_TO_SCOUT", True):
+        return None
+    return _scout_locate_object(image_b64, object_name)
+
+
+def _scout_locate_object(image_b64: str, object_name: str) -> list | None:
     if not image_b64 or not object_name:
         return None
 
@@ -378,13 +422,24 @@ _ROW_ZONES = {
 
 
 def locate_all_objects_in_image(image_b64: str, object_names: list) -> dict:
-    """
-    Locate multiple objects using a 3×3 zone grid description rather than pixel
-    coordinates.  Zone descriptions ("right bottom") are far more reliable for
-    general vision LLMs than predicting exact bounding-box numbers.
-    Returns {name: [x1, y1, x2, y2]} as zone boundary fractions (0-1).
-    Called during scan so zones are pre-computed and highlight feedback is instant.
-    """
+    if not image_b64 or not object_names:
+        return {}
+    if not current_app.config.get("CV_ENABLED", True):
+        return _scout_locate_all_objects(image_b64, object_names)
+    try:
+        from app.services import cv_service
+        result = cv_service.locate_all_objects_in_image(image_b64, object_names)
+        if result:
+            return result
+        current_app.logger.warning("[CV] DINO returned no locations, falling back to Scout")
+    except Exception as e:
+        current_app.logger.warning(f"[CV] DINO failed ({e}), falling back to Scout")
+    if not current_app.config.get("CV_FALLBACK_TO_SCOUT", True):
+        return {}
+    return _scout_locate_all_objects(image_b64, object_names)
+
+
+def _scout_locate_all_objects(image_b64: str, object_names: list) -> dict:
     if not image_b64 or not object_names:
         return {}
 
@@ -440,10 +495,24 @@ def locate_all_objects_in_image(image_b64: str, object_names: list) -> dict:
 
 
 def locate_all_instances_in_image(image_b64: str, object_name: str, expected_count: int) -> list:
-    """
-    Return tight bounding boxes for every visible instance of object_name in the image.
-    Returns a list of up to expected_count [x1,y1,x2,y2] (normalised 0-1); missing slots are None.
-    """
+    if not image_b64 or not object_name or expected_count < 1:
+        return []
+    if not current_app.config.get("CV_ENABLED", True):
+        return _scout_locate_all_instances(image_b64, object_name, expected_count)
+    try:
+        from app.services import cv_service
+        result = cv_service.locate_all_instances_in_image(image_b64, object_name, expected_count)
+        if result:
+            return result
+        current_app.logger.warning(f"[CV] DINO found no instances of '{object_name}', falling back to Scout")
+    except Exception as e:
+        current_app.logger.warning(f"[CV] DINO failed ({e}), falling back to Scout")
+    if not current_app.config.get("CV_FALLBACK_TO_SCOUT", True):
+        return []
+    return _scout_locate_all_instances(image_b64, object_name, expected_count)
+
+
+def _scout_locate_all_instances(image_b64: str, object_name: str, expected_count: int) -> list:
     if not image_b64 or not object_name or expected_count < 1:
         return []
 
@@ -506,18 +575,66 @@ def locate_all_instances_in_image(image_b64: str, object_name: str, expected_cou
         return []
 
 
-def suggest_location_name_from_image(image_b64: str) -> str | None:
-    """Use vision model to suggest a room/area name from a 360° screenshot."""
+def suggest_location_name_from_image(
+    image_b64: str,
+    building_context: str | None = None,
+    nearby_names: list | None = None,
+) -> str | None:
+    """Use a vision model to name the area shown in a screenshot.
+
+    The label is chosen from the *visible evidence* across many domains
+    (industrial, lab, warehouse, office, retail, healthcare, residential), not a
+    fixed residential list — so a factory floor isn't mislabelled "Office" and a
+    lab isn't called "Canteen". ``building_context`` (the space/site name) anchors
+    the likely setting. ``nearby_names`` lists labels already given to adjacent
+    sweeps so the model stays consistent within a single room instead of renaming
+    the same room on every step.
+    """
     if not image_b64:
         return None
     if "," in image_b64:
         image_b64 = image_b64.split(",", 1)[1]
 
+    context_line = ""
+    if building_context:
+        context_line = (
+            f'This area is inside a site/building named "{building_context}". '
+            "Use that to judge the likely setting (e.g. factory, laboratory, warehouse, "
+            "office, hospital, school, retail store, or home).\n"
+        )
+
+    nearby_line = ""
+    if nearby_names:
+        uniq = ", ".join(dict.fromkeys(n for n in nearby_names if n))
+        if uniq:
+            nearby_line = (
+                f"NEARBY POINTS in this same area were already labelled: {uniq}.\n"
+                "If this view is clearly the SAME room/area as one of those, reply with that "
+                "EXACT existing name (so one room keeps one name). Only give a different name "
+                "if this is clearly a separate area.\n"
+            )
+
     prompt = (
-        "Look at this image from a 3D space. Identify what type of room or area this is. "
-        "Reply with ONLY the room name — nothing else. "
-        "Examples: Kitchen, Bedroom 1, Living Room, Office, Bathroom, Conference Room, Hallway, Dining Room. "
-        "If multiple rooms are plausible, pick the most specific one. No explanations."
+        "You are labelling areas in a 3D walkthrough of a REAL building.\n"
+        f"{context_line}"
+        f"{nearby_line}"
+        "Look carefully at the VISIBLE evidence — equipment, machinery, furniture, "
+        "fixtures, signage and layout — and name THIS specific area accordingly. "
+        "Match the label to what you actually see, for example:\n"
+        "- Heavy machinery, assembly lines, conveyors, workbenches, pallets -> Factory Floor or Workshop\n"
+        "- Lab benches, fume hoods, microscopes, test/measurement equipment -> Laboratory\n"
+        "- Server racks, network cabling -> Server Room\n"
+        "- Tall shelving racks stacked with boxes/goods -> Warehouse or Storage\n"
+        "- Desks, monitors, office chairs -> Office\n"
+        "- A large table ringed with chairs and a screen -> Meeting Room\n"
+        "- Dining tables with a serving counter -> Canteen or Cafeteria\n"
+        "- Cooking appliances -> Kitchen; beds -> Bedroom; toilets/sinks -> Restroom\n"
+        "- Loading docks / roller shutter doors -> Loading Bay; a reception desk -> Reception\n"
+        "- A plain connecting passage with doors -> Corridor\n"
+        "Do NOT default to Office, Canteen, or a home room unless the evidence clearly "
+        "supports it. If unsure, choose the label that best fits the MOST PROMINENT "
+        "equipment visible.\n"
+        "Reply with ONLY the area name (1-3 words). No explanation, no punctuation."
     )
     try:
         completion = _client().chat.completions.create(
@@ -530,25 +647,37 @@ def suggest_location_name_from_image(image_b64: str) -> str | None:
                 ],
             }],
             max_tokens=30,
-            temperature=0.2,
+            temperature=0.0,
         )
         name = (completion.choices[0].message.content or "").strip()
-        name = name.split("\n")[0].strip("\"'").strip()
+        name = name.split("\n")[0].strip("\"'").strip().rstrip(".")
         return name if name else None
     except Exception as e:
         current_app.logger.exception(f"[Groq Vision] suggest_location_name_from_image failed: {e}")
         return None
 
 
-def suggest_location_name_from_objects(detected_objects: dict) -> str | None:
-    """Infer a room/area name from a dict of detected objects using the LLM."""
+def suggest_location_name_from_objects(detected_objects: dict, building_context: str | None = None) -> str | None:
+    """Infer an area name from a dict of detected objects using the LLM."""
     if not detected_objects:
         return None
     objects_str = ", ".join(f"{count} {name}" for name, count in detected_objects.items())
+    context_line = ""
+    if building_context:
+        context_line = (
+            f'This is inside a site/building named "{building_context}", '
+            "so consider industrial, lab, warehouse, retail and office areas too, "
+            "not only home rooms.\n"
+        )
     prompt = (
-        f"A room contains: {objects_str}.\n"
-        "What is the most likely room type? Reply with ONLY the room name — no explanation. "
-        "Examples: Kitchen, Bedroom, Living Room, Office, Bathroom, Conference Room, Dining Room."
+        f"{context_line}"
+        f"An area contains these detected items: {objects_str}.\n"
+        "Based on the items, name the single most likely area type. Consider a wide range: "
+        "Factory Floor, Workshop, Laboratory, Server Room, Warehouse, Storage, Loading Bay, "
+        "Office, Meeting Room, Reception, Canteen, Kitchen, Restroom, Corridor, Bedroom, "
+        "Living Room, etc. Pick the best fit for the items — do not default to Office or a "
+        "home room unless the items clearly indicate it.\n"
+        "Reply with ONLY the area name (1-3 words). No explanation."
     )
     model = current_app.config.get("GROQ_MODEL", "llama-3.3-70b-versatile")
     try:

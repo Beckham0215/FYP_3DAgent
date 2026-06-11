@@ -29,6 +29,9 @@ def register():
         username = (request.form.get("username") or "").strip()
         email = (request.form.get("email") or "").strip()
         password = request.form.get("password") or ""
+        role = (request.form.get("role") or "worker").strip().lower()
+        if role not in ("worker", "admin"):
+            role = "worker"
         if not username or not email or len(password) < 6:
             flash("Username, email, and password (min 6 chars) are required.", "danger")
             return render_template("register.html")
@@ -42,6 +45,7 @@ def register():
             username=username,
             email=email,
             password_hash=generate_password_hash(password),
+            role=role,
         )
         db.session.add(user)
         db.session.commit()
@@ -61,6 +65,7 @@ def login():
         if user and check_password_hash(user.password_hash, password):
             session["user_id"] = user.user_id
             session["username"] = user.username
+            session["role"] = user.role or "worker"
             flash("Welcome back.", "success")
             next_url = request.args.get("next") or ""
             # Reject external redirects (open redirect prevention)
