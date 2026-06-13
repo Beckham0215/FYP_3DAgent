@@ -39,7 +39,12 @@
 
   <!-- Login Card -->
   <section class="card login-card">
-    <h1 style="text-align: center; margin-bottom: 0.5rem;">Welcome to 3DAgent</h1>
+    <div style="display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 0.5rem;">
+      <h1 style="margin: 0;">Welcome to 3DAgent</h1>
+      <img src="{{ url_for('static', filename='images/logo2.png') }}"
+          alt="3DAgent Logo"
+          style="width: 50px; height: 50px; object-fit: contain;">
+    </div>
     <p class="muted" style="text-align: center; margin-bottom: var(--spacing-xl); color: var(--text-secondary);">Sign in to your account to continue</p>
     
     <form method="post" class="stack-form">

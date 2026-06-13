@@ -96,24 +96,31 @@ def _extract_count_from_answer(answer: str) -> int:
     return 0
 
 
-def _detect_objects_with_vision_and_positions(image_b64: str, area_context: str | None = None) -> tuple:
+def _detect_objects_with_vision_and_positions(image_b64: str, area_context: str | None = None, mode: str | None = None) -> tuple:
     """
     Returns (counts_dict, positions_dict, positions_all_dict).
     positions_dict maps name → [x1,y1,x2,y2] (the prominent instance);
     positions_all_dict maps name → [[x1,y1,x2,y2], ...] (every instance).
     Positions are only available when the CV (YOLO) path is used.
+    ``mode`` (fast / normal / complex) selects the detector's speed/accuracy
+    trade-off.
     """
     if not image_b64:
         return {}, {}, {}
     try:
         if current_app.config.get("GROQ_API_KEY"):
-            result = groq_service.detect_objects_from_image_with_positions(image_b64, area_context)
+            result = groq_service.detect_objects_from_image_with_positions(image_b64, area_context, mode)
             counts        = result.get("counts", {})
             positions     = result.get("positions", {})
             positions_all = result.get("positions_all", {})
             current_app.logger.info(f"[Vision] Groq vision detected: {counts}")
             if counts:
                 return counts, positions, positions_all
+            # With the CV detector active, an empty result means nothing was
+            # clearly detected in this frame. Don't fall back to box-less BLIP
+            # guesses — every listed item must be outline-able, so return empty.
+            if current_app.config.get("CV_ENABLED", True):
+                return {}, {}, {}
             current_app.logger.warning("[Vision] Groq vision returned empty, falling back to BLIP")
 
         answer = blip_service.answer_visual_question(
@@ -331,58 +338,94 @@ def vla():
         })
 
     if intent == "query_assets":
-        # User is asking about assets in a specific room/area
-        query_area = routed.get("query_area")
-        if not query_area:
-            fallback = "I understand you're asking about assets in a location, but I couldn't identify which room. Please try: 'What are the assets in [room name]?'"
-            _log_chat(uid, map_id, message, fallback)
-            return jsonify({"ok": True, "intent": "chat", "response": fallback})
-        
-        # Store the queried area in session for context (full session context)
-        session[f"last_queried_area_{map_id}"] = query_area
-        
-        # Query the AssetsSummary table for the specified area
-        asset_summaries = AssetsSummary.query.filter_by(
-            map_id=map_id,
-            area_name=query_area
-        ).all()
-        
-        if not asset_summaries:
-            # Try case-insensitive search if exact match fails
-            all_summaries = AssetsSummary.query.filter_by(map_id=map_id).all()
-            query_area_lower = query_area.lower()
-            asset_summaries = [
-                s for s in all_summaries 
-                if s.area_name and s.area_name.lower() == query_area_lower
-            ]
-        
-        if not asset_summaries:
-            reply = f"No assets have been recorded for {query_area}. Try scanning it first using the viewer."
+        query_area = (routed.get("query_area") or "").strip()
+        asked_asset = (routed.get("asset_name") or "").strip().lower()
+
+        # ── Resolve the area scope (named room / current location / whole space) ──
+        scope_all = query_area.lower() in ("__all__", "all", "everywhere", "anywhere", "whole space")
+        area_name = None
+        if not scope_all:
+            if query_area.lower() in ("", "__current__", "here", "current", "this location", "this room", "this area"):
+                if current_sweep_uuid:
+                    tag = Asset.query.filter_by(map_id=map_id, sweep_uuid=current_sweep_uuid).first()
+                    if tag:
+                        area_name = tag.label_name
+                    else:
+                        row = AssetsSummary.query.filter_by(map_id=map_id, sweep_uuid=current_sweep_uuid).first()
+                        area_name = row.area_name if row else None
+                if not area_name:
+                    scope_all = True  # can't resolve "here" → answer for the whole space
+            else:
+                area_name = query_area
+
+        all_rows = AssetsSummary.query.filter_by(map_id=map_id).all()
+        if scope_all:
+            rows = all_rows
+            area_label = "the whole space"
+        else:
+            an = (area_name or "").lower()
+            rows = [r for r in all_rows if (r.area_name or "").lower() == an]
+            if not rows:
+                rows = [r for r in all_rows if an and an in (r.area_name or "").lower()]
+            area_label = area_name or "this location"
+            if area_name:
+                session[f"last_queried_area_{map_id}"] = area_name
+
+        if not rows:
+            reply = f"No assets have been recorded for {area_label}. Try scanning it first with the Scan Area tool."
             _log_chat(uid, map_id, message, reply)
             return jsonify({"ok": True, "intent": "chat", "response": reply})
-        
-        # Build a natural language response from the asset summary
-        asset_list = {}
-        for summary in asset_summaries:
-            asset_name = summary.asset_name
-            count = summary.count
-            if asset_name:
-                asset_list[asset_name] = count
-        
-        if asset_list:
-            reply_parts = []
-            for asset_name, count in sorted(asset_list.items()):
-                if count == 1:
-                    reply_parts.append(f"1 {asset_name}")
-                else:
-                    reply_parts.append(f"{count} {asset_name}s")
-            
-            reply = f"In {query_area}: {', '.join(reply_parts)}."
-        else:
-            reply = f"No assets detected in {query_area}."
-        
+
+        # ── Specific-item count, e.g. "how many chairs" ──
+        if asked_asset:
+            from difflib import get_close_matches
+            names = list({(r.asset_name or "").lower() for r in rows if r.asset_name})
+            target = asked_asset.rstrip("s")
+            matched = [n for n in names if n == asked_asset or n == target or (target and (target in n or n in target))]
+            if not matched:
+                matched = get_close_matches(target, names, n=3, cutoff=0.6)
+            total = sum(r.count or 0 for r in rows if (r.asset_name or "").lower() in matched)
+            label = target or asked_asset
+            if total == 0:
+                reply = f"There are no {label}s recorded in {area_label}."
+            elif total == 1:
+                reply = f"There is 1 {label} in {area_label}."
+            else:
+                reply = f"There are {total} {label}s in {area_label}."
+            _log_chat(uid, map_id, message, reply)
+            return jsonify({"ok": True, "intent": "chat", "response": reply})
+
+        # ── Otherwise, list everything (summed per item) ──
+        totals = {}
+        for r in rows:
+            if r.asset_name:
+                totals[r.asset_name] = totals.get(r.asset_name, 0) + (r.count or 0)
+        parts = [f"{cnt} {name}" + ("" if cnt == 1 else "s") for name, cnt in sorted(totals.items())]
+        reply = (f"In {area_label}: {', '.join(parts)}." if parts else f"No assets detected in {area_label}.")
         _log_chat(uid, map_id, message, reply)
         return jsonify({"ok": True, "intent": "chat", "response": reply})
+
+    if intent == "list_locations":
+        if not assets:
+            reply = "No locations have been tagged yet. Use the Location tool (or Auto-Tag) in the viewer to add some."
+            _log_chat(uid, map_id, message, reply)
+            return jsonify({"ok": True, "intent": "chat", "response": reply})
+        by_cat = {}
+        for a in assets:
+            by_cat.setdefault(a.category or "Uncategorized", []).append(a.label_name)
+        parts = [f"{cat} ({', '.join(sorted(v))})" for cat, v in sorted(by_cat.items())]
+        reply = f"{len(assets)} tagged location(s) — " + "; ".join(parts) + "."
+        _log_chat(uid, map_id, message, reply)
+        return jsonify({"ok": True, "intent": "chat", "response": reply})
+
+    if intent in ("scan_area", "auto_tag", "show_floorplan"):
+        action_msgs = {
+            "scan_area": "Opening the scanner — choose what to scan.",
+            "auto_tag": "Opening Auto-Tag — pick the sweeps to tag.",
+            "show_floorplan": "Opening the floor plan.",
+        }
+        _log_chat(uid, map_id, message, action_msgs[intent])
+        return jsonify({"ok": True, "intent": intent, "response": action_msgs[intent]})
 
     if intent == "visual":
         return jsonify(
@@ -797,6 +840,9 @@ def scan_assets():
     sweep_uuid    = (data.get("sweep_uuid") or "").strip()
     image_b64     = data.get("image_base64") or ""
     area_context  = (data.get("area_name") or "").strip() or None
+    scan_mode     = (data.get("mode") or "normal").strip().lower()
+    if scan_mode not in ("fast", "normal", "complex"):
+        scan_mode = "normal"
 
     try:
         map_id = int(map_id)
@@ -813,7 +859,7 @@ def scan_assets():
         return jsonify({"ok": False, "error": "Space not found"}), 404
 
     try:
-        object_counts, raw_positions, raw_positions_all = _detect_objects_with_vision_and_positions(image_b64, area_context)
+        object_counts, raw_positions, raw_positions_all = _detect_objects_with_vision_and_positions(image_b64, area_context, scan_mode)
     except Exception as e:
         current_app.logger.exception("Scan assets vision detector failed")
         return jsonify({"ok": False, "error": f"Vision detection failed: {e!s}"}), 500

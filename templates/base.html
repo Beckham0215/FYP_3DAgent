@@ -6,13 +6,18 @@
   <meta name="description" content="3DAgent - AI-powered 3D space navigation and management">
   <title>{% block title %}3DAgent{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/modern.css') }}">
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>">
+  <link rel="icon" type="image/png" href="{{ url_for('static', filename='images/logo2.png') }}">
 </head>
 <body class="{% block body_class %}{% endblock %}">
   {% if session.get('user_id') %}
     <aside class="sidebar">
       <div class="sidebar-header">
-        <a href="{{ url_for('main.dashboard') }}" class="sidebar-brand">3DAgent</a>
+        <a href="{{ url_for('main.dashboard') }}" class="sidebar-brand" style="display: flex; align-items: center; gap: 8px;">
+          <img src="{{ url_for('static', filename='images/logo2.png') }}"
+              alt="Logo"
+              style="width: 28px; height: 28px; object-fit: contain;">
+          <span>3DAgent</span>
+        </a>
       </div>
       <nav class="sidebar-content">
 
@@ -52,10 +57,17 @@
               </a>
             </li>
             <li class="sidebar-nav-item">
-              <a href="{{ url_for('main.manage_assets', map_id=current_map_id) }}"
-                 class="sidebar-nav-link {% if request.endpoint in ['main.manage_assets', 'main.edit_asset', 'main.edit_scanned_asset'] %}active{% endif %}">
+              <a href="{{ url_for('main.manage_locations', map_id=current_map_id) }}"
+                 class="sidebar-nav-link {% if request.endpoint in ['main.manage_locations', 'main.edit_asset'] %}active{% endif %}">
                 <span class="nav-icon">📍</span>
-                <span>Tagged Locations</span>
+                <span>Locations</span>
+              </a>
+            </li>
+            <li class="sidebar-nav-item">
+              <a href="{{ url_for('main.manage_assets', map_id=current_map_id) }}"
+                 class="sidebar-nav-link {% if request.endpoint in ['main.manage_assets', 'main.edit_scanned_asset'] %}active{% endif %}">
+                <span class="nav-icon">📦</span>
+                <span>Assets</span>
               </a>
             </li>
           </ul>
@@ -64,29 +76,37 @@
           <ul class="sidebar-nav">
             <li class="sidebar-nav-item">
               <span class="sidebar-nav-link disabled" title="Open a space first">
-                <span class="nav-icon">👁️</span>
-                <span>3D Viewer</span>
+                <span class="nav-icon">👁️</span><span>3D Viewer</span>
               </span>
             </li>
             <li class="sidebar-nav-item">
               <span class="sidebar-nav-link disabled" title="Open a space first">
-                <span class="nav-icon">📍</span>
-                <span>Tagged Locations</span>
+                <span class="nav-icon">📍</span><span>Locations</span>
+              </span>
+            </li>
+            <li class="sidebar-nav-item">
+              <span class="sidebar-nav-link disabled" title="Open a space first">
+                <span class="nav-icon">📦</span><span>Assets</span>
               </span>
             </li>
           </ul>
         {% endif %}
 
+        <!-- Data -->
+        <div class="sidebar-section-label" style="margin-top: var(--spacing-lg);">Data</div>
+        <ul class="sidebar-nav">
+          <li class="sidebar-nav-item">
+            <a href="{{ url_for('main.export_hub') }}"
+               class="sidebar-nav-link {% if request.endpoint == 'main.export_hub' %}active{% endif %}">
+              <span class="nav-icon">⬇️</span>
+              <span>Export</span>
+            </a>
+          </li>
+        </ul>
+
         <!-- Help -->
         <div class="sidebar-section-label" style="margin-top: var(--spacing-lg);">Help & Resources</div>
         <ul class="sidebar-nav">
-          <li class="sidebar-nav-item">
-            <a href="{{ url_for('main.new_space') }}"
-               class="sidebar-nav-link {% if request.endpoint == 'main.new_space' %}active{% endif %}">
-              <span class="nav-icon">➕</span>
-              <span>Add New Space</span>
-            </a>
-          </li>
           <li class="sidebar-nav-item">
             <a href="{{ url_for('main.quick_tips') }}"
                class="sidebar-nav-link {% if request.endpoint == 'main.quick_tips' %}active{% endif %}">

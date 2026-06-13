@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Export · 3DAgent{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <div class="page-title">
+    <h1>⬇️ Export Center</h1>
+    <p>Download the locations or scanned assets of any space as CSV or PDF.</p>
+  </div>
+</div>
+
+<div class="page-main">
+  {% if spaces %}
+    <div class="export-grid">
+      {% for s in spaces %}
+      <div class="card export-card">
+        <div class="export-card-head">
+          <h3 style="margin:0;">{{ s.map_name }}</h3>
+          <code class="space-card-sid">{{ s.matterport_sid }}</code>
+        </div>
+
+        <div class="export-card-rows">
+          <!-- Locations -->
+          <div class="export-card-row">
+            <div class="export-card-row-label">
+              <span class="export-card-icon">📍</span>
+              <div>
+                <div class="export-card-name">Locations</div>
+                <div class="export-card-meta">{{ loc_counts.get(s.map_id, 0) }} tagged</div>
+              </div>
+            </div>
+            <div class="export-card-row-actions">
+              <a href="{{ url_for('main.export_locations_csv', map_id=s.map_id) }}" target="_blank" class="btn ghost small">⬇️ CSV</a>
+              <a href="{{ url_for('main.export_locations_pdf', map_id=s.map_id) }}" target="_blank" class="btn ghost small">📄 PDF</a>
+            </div>
+          </div>
+
+          <!-- Assets -->
+          <div class="export-card-row">
+            <div class="export-card-row-label">
+              <span class="export-card-icon">📦</span>
+              <div>
+                <div class="export-card-name">Assets</div>
+                <div class="export-card-meta">{{ asset_counts.get(s.map_id, 0) }} items</div>
+              </div>
+            </div>
+            <div class="export-card-row-actions">
+              <a href="{{ url_for('main.export_csv', map_id=s.map_id) }}" target="_blank" class="btn ghost small">⬇️ CSV</a>
+              <a href="{{ url_for('main.export_pdf', map_id=s.map_id) }}" target="_blank" class="btn ghost small">📄 PDF</a>
+            </div>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="card empty">
+      <div class="card-empty-icon">📭</div>
+      <h2 style="margin-top:0;">No spaces to export</h2>
+      <p class="text-secondary" style="margin-bottom:0;">Once a space has tagged locations or scanned assets, you can export them here.</p>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

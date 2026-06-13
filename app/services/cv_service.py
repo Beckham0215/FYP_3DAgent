@@ -24,12 +24,92 @@ _COCO_TO_APP_LABEL = {
     "potted plant": "plant",
     "cell phone":   "phone",
     "handbag":      "bag",
+    # Open-vocabulary (DINO/Scout) synonyms collapsed onto canonical asset names
+    # so they don't split into a near-duplicate category alongside the YOLO label.
+    "office chair":  "chair",
+    "ceiling fan":   "fan",
+    "bookshelf":     "shelf",
+    "shelving rack": "shelf",
+    "examination bed": "bed",
+    "hospital bed":  "bed",
+    "reception desk": "desk",
+    "cardboard box": "box",
 }
 
 _EXCLUDE_CLASSES = frozenset({
     "person", "cat", "dog", "bird", "car", "truck", "bus",
     "motorcycle", "bicycle", "airplane", "boat", "train",
 })
+
+# Open-vocabulary terms that COCO/YOLOv8 (80 classes) cannot name. Running these
+# through Grounding DINO during a scan lets specialised equipment be identified by
+# its real name instead of being missed or mapped to the nearest COCO class.
+# Kept deliberately free of COCO furniture (chair/table/sofa/tv/…) so the YOLO
+# counts for common items stay authoritative and DINO only ADDS new categories.
+_SCAN_BASE_VOCAB = (
+    "fire extinguisher", "first aid kit", "exit sign", "trash can",
+    "whiteboard", "monitor", "printer", "projector", "cabinet",
+    "shelf", "desk", "water dispenser", "air conditioner", "ceiling fan",
+)
+
+# Extra vocabulary pulled in when the area name hints at a particular setting, so
+# a factory floor surfaces forklifts/pallets and a lab surfaces fume hoods, etc.
+_SCAN_DOMAIN_VOCAB = {
+    "factory":   ("forklift", "pallet", "pallet jack", "workbench", "conveyor belt", "tool cabinet", "ladder", "trolley", "drum", "crate"),
+    "workshop":  ("workbench", "tool cabinet", "ladder", "drill press", "vise", "trolley"),
+    "warehouse": ("forklift", "pallet", "pallet jack", "shelving rack", "crate", "cardboard box", "trolley", "ladder"),
+    "storage":   ("pallet", "shelving rack", "crate", "cardboard box", "ladder"),
+    "loading":   ("forklift", "pallet", "pallet jack", "crate", "trolley"),
+    "lab":       ("microscope", "fume hood", "lab bench", "test tube rack", "centrifuge", "safety cabinet"),
+    "server":    ("server rack", "network switch", "patch panel", "computer tower"),
+    "office":    ("filing cabinet", "photocopier", "office chair", "bookshelf"),
+    "meeting":   ("whiteboard", "projector screen", "speakerphone"),
+    "reception": ("reception desk", "sofa", "display stand"),
+    "kitchen":   ("coffee machine", "kettle", "water dispenser", "dishwasher"),
+    "canteen":   ("vending machine", "water dispenser", "coffee machine"),
+    "retail":    ("shopping cart", "display rack", "mannequin", "shelving rack"),
+    "hospital":  ("wheelchair", "stretcher", "hospital bed", "iv stand", "medical cart"),
+    "clinic":    ("wheelchair", "examination bed", "iv stand", "medical cart"),
+}
+
+
+def _build_scan_vocab(area_context: str | None) -> list[str]:
+    """Curated open-vocabulary term list for a scan, biased by the area name."""
+    override = _get_config("CV_HYBRID_VOCAB_TERMS", "")
+    if override:
+        terms = [t.strip().lower() for t in str(override).split(",") if t.strip()]
+        return list(dict.fromkeys(terms))
+
+    terms = list(_SCAN_BASE_VOCAB)
+    ctx = (area_context or "").lower()
+    for key, extra in _SCAN_DOMAIN_VOCAB.items():
+        if key in ctx:
+            terms.extend(extra)
+    # De-dup while preserving order; cap length so the DINO prompt stays sharp.
+    deduped = list(dict.fromkeys(terms))
+    return deduped[:18]
+
+
+def _iou(a: list, b: list) -> float:
+    ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
+    ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])
+    iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    area_a = max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1])
+    area_b = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _nms(scored_boxes: list, iou_thresh: float) -> list:
+    """Greedy non-max suppression. scored_boxes: list of (score, bbox)."""
+    kept: list = []
+    for score, box in sorted(scored_boxes, key=lambda t: t[0], reverse=True):
+        if all(_iou(box, kb) < iou_thresh for _, kb in kept):
+            kept.append((score, box))
+    return kept
 
 
 def _get_config(key, default):
@@ -234,10 +314,12 @@ def _load_dino():
             raise RuntimeError(f"Grounding DINO failed to load: {e}") from e
 
 
-def _run_dino(image: Image.Image, text: str) -> dict:
+def _run_dino(image: Image.Image, text: str, box_thresh: float | None = None, text_thresh: float | None = None) -> dict:
     img_w, img_h = image.size
-    box_thresh  = _get_config("CV_DINO_CONFIDENCE",     0.25)
-    text_thresh = _get_config("CV_DINO_TEXT_THRESHOLD",  0.25)
+    if box_thresh is None:
+        box_thresh = _get_config("CV_DINO_CONFIDENCE", 0.25)
+    if text_thresh is None:
+        text_thresh = _get_config("CV_DINO_TEXT_THRESHOLD", 0.25)
 
     inputs = _dino_processor(images=image, text=text, return_tensors="pt")
     inputs = {k: v.to(_device) if hasattr(v, "to") else v for k, v in inputs.items()}
@@ -281,27 +363,31 @@ def preload():
     threading.Thread(target=_safe_load_dino, daemon=True, name="cv-dino-preload").start()
 
 
-def detect_objects_with_boxes(image_b64: str, area_context: str | None = None) -> dict:
-    """Single YOLO pass returning counts plus EVERY instance's box per class.
+# Per-mode detection tuning. ``hybrid`` toggles the open-vocabulary DINO pass;
+# ``yolo_conf``/``dino_conf`` of None fall back to the configured defaults.
+#   fast    → YOLO only, higher confidence (quick, shallow vocabulary)
+#   normal  → YOLO + open-vocab hybrid at default thresholds (balanced)
+#   complex → YOLO + open-vocab hybrid at lower thresholds (slow, most thorough)
+_SCAN_MODE_SETTINGS = {
+    "fast":    {"hybrid": False, "yolo_conf": 0.45, "dino_conf": None},
+    "normal":  {"hybrid": True,  "yolo_conf": None, "dino_conf": None},
+    "complex": {"hybrid": True,  "yolo_conf": 0.25, "dino_conf": 0.22},
+}
 
-    Returns {
-        "counts":    {name: int},
-        "boxes":     {name: [x1,y1,x2,y2]},          # most prominent box (instance #1)
-        "boxes_all": {name: [[x1,y1,x2,y2], ...]},   # all instances, prominent-first
-    }
-    All boxes are normalised 0-1. boxes_all powers per-instance audit/highlight;
-    boxes (the first/largest) is the default single highlight.
-    """
-    if not image_b64:
-        return {"counts": {}, "boxes": {}, "boxes_all": {}}
+
+def _mode_settings(mode: str | None) -> dict:
+    return _SCAN_MODE_SETTINGS.get((mode or "normal").lower(), _SCAN_MODE_SETTINGS["normal"])
+
+
+def _yolo_detect_boxes(image: Image.Image, conf: float | None = None) -> dict:
+    """YOLO pass: counts plus EVERY instance's box per COCO class."""
     _load_yolo()
-    image = _decode_image(image_b64)
     img_w, img_h = image.size
-    conf = _get_config("CV_YOLO_CONFIDENCE", 0.35)
+    if conf is None:
+        conf = _get_config("CV_YOLO_CONFIDENCE", 0.35)
     with torch.no_grad():
         results = _yolo_model(image, conf=conf, verbose=False)
 
-    counts: dict = {}
     # name -> list of (area, bbox) so we can rank instances by prominence
     collected: dict = {}
     for r in results:
@@ -310,25 +396,187 @@ def detect_objects_with_boxes(image_b64: str, area_context: str | None = None) -
             label = _normalize_label(raw_label)
             if label in _EXCLUDE_CLASSES:
                 continue
-            counts[label] = counts.get(label, 0) + 1
             nb = _normalize_bbox(box.xyxy[0].tolist(), img_w, img_h)
             if nb:
                 area = (nb[2] - nb[0]) * (nb[3] - nb[1])
                 collected.setdefault(label, []).append((area, nb))
 
+    counts: dict = {}
     boxes: dict = {}
     boxes_all: dict = {}
     for label, items in collected.items():
         items.sort(key=lambda t: t[0], reverse=True)  # largest/closest first
         ordered = [bbox for _, bbox in items]
+        counts[label] = len(ordered)
         boxes_all[label] = ordered
         boxes[label] = ordered[0]
-    logger.info(f"[CV YOLO] Detected: {counts}")
     return {"counts": counts, "boxes": boxes, "boxes_all": boxes_all}
 
 
-def detect_objects_from_image(image_b64: str, area_context: str | None = None) -> dict:
-    return detect_objects_with_boxes(image_b64, area_context)["counts"]
+def _dino_detect_vocab(image: Image.Image, vocab: list[str], box_thresh: float | None = None) -> dict:
+    """Open-vocabulary detection of the given terms via Grounding DINO.
+
+    Returns {term: [bbox, ...]} after per-term NMS. Boxes are normalised 0-1.
+    """
+    if not vocab:
+        return {}
+    img_w, img_h = image.size
+    if box_thresh is None:
+        box_thresh = _get_config("CV_HYBRID_DINO_CONFIDENCE", 0.30)
+    text_thresh = _get_config("CV_DINO_TEXT_THRESHOLD", 0.25)
+    text = " . ".join(vocab) + " ."
+    result = _run_dino(image, text, box_thresh=box_thresh, text_thresh=text_thresh)
+
+    boxes  = result.get("boxes", [])
+    scores = result.get("scores", [])
+    labels = result.get("labels", [])
+    if hasattr(boxes, "tolist"):
+        boxes = boxes.tolist()
+    if hasattr(scores, "tolist"):
+        scores = scores.tolist()
+
+    per_term: dict = {}
+    for box, score, label in zip(boxes, scores, labels):
+        nb = _normalize_bbox(box, img_w, img_h)
+        if not nb:
+            continue
+        lab = (label or "").strip().lower()
+        if not lab:
+            continue
+        # Map DINO's matched phrase back to a vocab term (it may return a substring).
+        term = next((v for v in vocab if v in lab or lab in v), lab)
+        per_term.setdefault(term, []).append((float(score), nb))
+
+    nms_iou = _get_config("CV_HYBRID_NMS_IOU", 0.5)
+    return {term: [b for _, b in _nms(bs, nms_iou)] for term, bs in per_term.items()}
+
+
+def detect_objects_with_boxes(image_b64: str, area_context: str | None = None, mode: str | None = None) -> dict:
+    """Detect assets returning counts plus EVERY instance's box per class.
+
+    YOLOv8 handles the 80 COCO classes (reliable counts + boxes). When the hybrid
+    open-vocabulary pass is enabled, Grounding DINO additionally names specialised
+    equipment COCO cannot (fire extinguisher, forklift, server rack, whiteboard …),
+    biased by the area name. DINO boxes that overlap an existing detection are
+    dropped (IoU dedup) so the same physical object is never counted twice.
+
+    ``mode`` selects the speed/accuracy trade-off (fast / normal / complex): fast
+    skips the open-vocab pass and uses a higher YOLO threshold; complex runs the
+    full hybrid at lower thresholds to catch more.
+
+    Returns {
+        "counts":    {name: int},
+        "boxes":     {name: [x1,y1,x2,y2]},          # most prominent box (instance #1)
+        "boxes_all": {name: [[x1,y1,x2,y2], ...]},   # all instances, prominent-first
+    }
+    All boxes are normalised 0-1.
+    """
+    if not image_b64:
+        return {"counts": {}, "boxes": {}, "boxes_all": {}}
+    settings = _mode_settings(mode)
+    image = _decode_image(image_b64)
+
+    yolo = _yolo_detect_boxes(image, conf=settings.get("yolo_conf"))
+    counts    = dict(yolo["counts"])
+    boxes_all = {k: list(v) for k, v in yolo["boxes_all"].items()}
+
+    if settings.get("hybrid") and _get_config("CV_HYBRID_VOCAB", True):
+        try:
+            _load_dino()
+            vocab = _build_scan_vocab(area_context)
+            dino_raw = _dino_detect_vocab(image, vocab, box_thresh=settings.get("dino_conf"))
+            dedup_iou = _get_config("CV_HYBRID_DEDUP_IOU", 0.5)
+            # Flatten all boxes already accepted so cross-label duplicates are caught.
+            existing = [b for bxs in boxes_all.values() for b in bxs]
+            added_total = 0
+            for term, bxs in dino_raw.items():
+                label = _normalize_label(term)
+                if label in _EXCLUDE_CLASSES:
+                    continue
+                kept = []
+                for b in bxs:
+                    if any(_iou(b, e) >= dedup_iou for e in existing):
+                        continue
+                    kept.append(b)
+                    existing.append(b)
+                if kept:
+                    counts[label] = counts.get(label, 0) + len(kept)
+                    boxes_all.setdefault(label, []).extend(kept)
+                    added_total += len(kept)
+            logger.info(f"[CV Hybrid] DINO vocab added {added_total} instance(s) across {len(dino_raw)} term(s)")
+        except Exception as e:
+            logger.warning(f"[CV Hybrid] open-vocab pass skipped ({e})")
+
+    # Rebuild prominent-first ordering per label (largest box = closest = instance #1).
+    boxes: dict = {}
+    for label, items in boxes_all.items():
+        items.sort(key=lambda bb: (bb[2] - bb[0]) * (bb[3] - bb[1]), reverse=True)
+        boxes_all[label] = items
+        boxes[label] = items[0]
+
+    logger.info(f"[CV] Detected: {counts}")
+    return {"counts": counts, "boxes": boxes, "boxes_all": boxes_all}
+
+
+def detect_objects_from_image(image_b64: str, area_context: str | None = None, mode: str | None = None) -> dict:
+    return detect_objects_with_boxes(image_b64, area_context, mode)["counts"]
+
+
+def locate_boxes_for_labels(image_b64: str, labels: list, use_dino: bool = False) -> dict:
+    """Guided localisation — boxes only, no counts.
+
+    Given the item names a vision model (Scout) already detected, find bounding
+    boxes for each: YOLOv8 supplies boxes for the 80 COCO classes, and — when
+    ``use_dino`` is set — Grounding DINO is prompted with exactly the remaining
+    names (guided open-vocab detection, no curated list needed).
+
+    Returns {"positions": {name: bbox}, "positions_all": {name: [bbox, ...]}}
+    keyed by the SAME label strings passed in, so they line up with the counts.
+    Names that can't be localised are simply absent (they stay in the list,
+    just without a highlight).
+    """
+    if not image_b64 or not labels:
+        return {"positions": {}, "positions_all": {}}
+    image = _decode_image(image_b64)
+
+    want = []
+    for lbl in labels:
+        s = str(lbl).strip().lower()
+        if s and s not in want:
+            want.append(s)
+    boxes_all = {name: [] for name in want}
+
+    # YOLO once — match its COCO detections to the requested names.
+    try:
+        yolo = _yolo_detect_boxes(image)
+        for ylabel, ybxs in yolo["boxes_all"].items():
+            for name in want:
+                if ylabel == name or ylabel in name or name in ylabel:
+                    boxes_all[name].extend(ybxs)
+    except Exception as e:
+        logger.warning(f"[CV guided] YOLO pass failed: {e}")
+
+    # Grounding DINO — guided detection for the names YOLO didn't cover.
+    if use_dino:
+        missing = [n for n in want if not boxes_all.get(n)]
+        if missing:
+            try:
+                _load_dino()
+                dino = _dino_detect_vocab(image, missing)
+                for term, dbxs in dino.items():
+                    boxes_all.setdefault(term, []).extend(dbxs)
+            except Exception as e:
+                logger.warning(f"[CV guided] DINO pass failed: {e}")
+
+    positions, positions_all = {}, {}
+    for name, bxs in boxes_all.items():
+        if not bxs:
+            continue
+        bxs = sorted(bxs, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]), reverse=True)
+        positions_all[name] = bxs
+        positions[name] = bxs[0]
+    logger.info(f"[CV guided] located boxes for {len(positions)}/{len(want)} label(s)")
+    return {"positions": positions, "positions_all": positions_all}
 
 
 def locate_object_in_image(image_b64: str, object_name: str) -> list | None:

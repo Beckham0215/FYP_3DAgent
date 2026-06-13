@@ -29,6 +29,71 @@
     <button type="button" class="sho-dismiss" id="sho-dismiss">&#xd7; Exit highlight</button>
   </div>
 
+  <!-- Agent activity loader — centered, shown during Auto-Tag / Scan -->
+  <div id="agent-loader" class="agent-loader" style="display:none;" aria-live="polite">
+    <div class="agent-loader-card">
+      <div class="agent-loader-spinner" aria-hidden="true"></div>
+      <div class="agent-loader-title" id="agent-loader-title">Working…</div>
+      <div class="agent-loader-status" id="agent-loader-status"></div>
+      <div class="agent-loader-bar"><div id="agent-loader-bar" class="agent-loader-bar-fill"></div></div>
+      <button type="button" id="agent-loader-stop" class="btn small danger" style="display:none;">⏹ Stop</button>
+    </div>
+  </div>
+
+  <!-- Live Glass HUD — always-on facility stats, floats top-right -->
+  <div id="live-hud" class="live-hud" style="display:none;" aria-live="polite">
+    <div class="live-hud-row live-hud-loc">
+      <span class="live-hud-icon">📍</span>
+      <div class="live-hud-loc-text">
+        <span class="live-hud-label">Current location</span>
+        <span id="live-hud-room" class="live-hud-room">Detecting…</span>
+      </div>
+    </div>
+    <div class="live-hud-stats">
+      <div class="live-hud-stat">
+        <span id="live-hud-assets" class="live-hud-stat-num">—</span>
+        <span class="live-hud-stat-lbl">Assets</span>
+      </div>
+      <div class="live-hud-stat">
+        <span id="live-hud-rooms" class="live-hud-stat-num">—</span>
+        <span class="live-hud-stat-lbl">Rooms</span>
+      </div>
+      <div class="live-hud-stat">
+        <span id="live-hud-health" class="live-hud-stat-num live-hud-health">—</span>
+        <span class="live-hud-stat-lbl">Health</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- X-Ray Asset Vision — full-viewport neon overlay of every detected asset -->
+  <div id="xray-overlay" class="xray-overlay" style="display:none;">
+    <svg id="xray-svg" viewBox="0 0 1000 1000" preserveAspectRatio="none"></svg>
+    <div id="xray-chips" class="xray-chips"></div>
+    <div class="xray-hud">
+      <span class="xray-hud-dot"></span>
+      <span id="xray-hud-text">Scanning…</span>
+      <button type="button" id="xray-exit" class="xray-exit">✕ Exit X-Ray</button>
+    </div>
+  </div>
+
+  <!-- Cinematic Auto-Tour — letterbox bars, glass room card, transport controls -->
+  <div id="tour-overlay" class="tour-overlay" style="display:none;">
+    <div class="tour-bar tour-bar-top"></div>
+    <div class="tour-bar tour-bar-bottom"></div>
+    <div id="tour-card" class="tour-card">
+      <div class="tour-card-kicker"><span id="tour-progress">Room 1 / 1</span></div>
+      <div id="tour-card-title" class="tour-card-title">Room</div>
+      <div id="tour-card-health" class="tour-card-health"></div>
+      <ul id="tour-card-assets" class="tour-card-assets"></ul>
+    </div>
+    <div class="tour-controls">
+      <button type="button" id="tour-pause" class="tour-ctrl" title="Pause / resume">⏸ Pause</button>
+      <button type="button" id="tour-skip" class="tour-ctrl" title="Skip to next room">⏭ Next</button>
+      <button type="button" id="tour-mute" class="tour-ctrl" title="Toggle narration">🔊 Voice</button>
+      <button type="button" id="tour-exit" class="tour-ctrl tour-ctrl-exit" title="End tour">✕ End Tour</button>
+    </div>
+  </div>
+
   <!-- Route HUD — floats bottom-left while a route is active -->
   <div id="route-hud" style="display:none;">
     <div class="route-hud-info">
@@ -73,7 +138,7 @@
 
       <button type="button" id="auto-tag-btn" class="tool-btn"
               title="Automatically navigate every sweep and tag locations using AI vision">
-        <span class="tool-btn-icon">🤖</span><span>Auto-Tag All</span>
+        <span class="tool-btn-icon">🤖</span><span id="auto-tag-label">Auto-Tag Locations</span>
       </button>
       <div id="auto-tag-status" class="toolbar-status"></div>
 
@@ -83,6 +148,25 @@
 
       <button type="button" id="export-btn" class="tool-btn" title="Export floor plan, locations or assets">
         <span class="tool-btn-icon">⬇</span><span>Export</span>
+      </button>
+
+      <div class="toolbar-divider"></div>
+
+      <span class="toolbar-section-label">Showcase</span>
+
+      <button type="button" id="xray-btn" class="tool-btn tool-btn--showcase"
+              title="Light up every detected asset in the current view">
+        <span class="tool-btn-icon">🛰️</span><span id="xray-label">X-Ray Vision</span>
+      </button>
+
+      <button type="button" id="health-map-btn" class="tool-btn tool-btn--showcase"
+              title="Show a colour-coded health tag over every room by maintenance status">
+        <span class="tool-btn-icon">🩺</span><span id="health-map-label">Health Map</span>
+      </button>
+
+      <button type="button" id="auto-tour-btn" class="tool-btn tool-btn--showcase"
+              title="Hands-free cinematic fly-through of every tagged room">
+        <span class="tool-btn-icon">🎬</span><span id="auto-tour-label">Auto-Tour</span>
       </button>
 
       <div class="toolbar-divider"></div>
@@ -331,11 +415,45 @@
     </div>
   </div>
 
+  <!-- Auto-Tag Results — review/confirm newly tagged sweeps (hover names, CRUD) -->
+  <div id="autotag-results" class="scan-modal-overlay" style="display:none;">
+    <div class="scan-modal-box autotag-modal">
+      <div class="scan-modal-header">
+        <strong id="autotag-results-title">✅ Auto-Tag Results</strong>
+        <button type="button" id="autotag-results-close" class="panel-close-btn" title="Close">✕</button>
+      </div>
+      <div class="scan-review-instructions">Hover the plan to check a sweep's name. Rename, delete, or fly to any of them below.</div>
+      <div class="autotag-results-canvas-wrap">
+        <canvas id="autotag-results-canvas" width="560" height="300"></canvas>
+        <div id="autotag-results-tooltip" class="autotag-tooltip" style="display:none;"></div>
+      </div>
+      <div id="autotag-results-list" class="autotag-results-list"></div>
+      <div class="autotag-actions">
+        <button type="button" id="autotag-results-done" class="btn primary small">✓ Done</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Scan Mode Picker Modal -->
   <div id="scan-mode-picker" class="scan-modal-overlay" style="display:none;">
     <div class="scan-modal-box scan-modal-narrow">
       <div class="scan-modal-header">
         <strong>📷 Scan Area</strong>
+      </div>
+      <div class="scan-review-instructions">Scan quality:</div>
+      <div id="scan-quality-group" class="scan-quality-group" role="radiogroup" aria-label="Scan quality">
+        <button type="button" class="scan-quality-opt" data-mode="fast" role="radio" aria-checked="false">
+          <span class="sq-title">⚡ Fast</span>
+          <span class="sq-desc">Quicker, lower accuracy</span>
+        </button>
+        <button type="button" class="scan-quality-opt is-selected" data-mode="normal" role="radio" aria-checked="true">
+          <span class="sq-title">⚖️ Normal</span>
+          <span class="sq-desc">Balanced speed &amp; accuracy</span>
+        </button>
+        <button type="button" class="scan-quality-opt" data-mode="complex" role="radio" aria-checked="false">
+          <span class="sq-title">🔬 Complex</span>
+          <span class="sq-desc">Most accurate, slower</span>
+        </button>
       </div>
       <div class="scan-review-instructions">Choose what to scan:</div>
       <button type="button" id="scan-current-btn" class="btn secondary small btn-full">📍 Scan Current Sweep</button>
@@ -404,6 +522,25 @@
     popovers.push(wirePopover("report-issue-btn", "report-popover", "report-popover-close", "report-location-select"));
     popovers.push(wirePopover("export-btn", "export-popover", "export-popover-close", null));
     popovers.push(wirePopover("problems-btn", "problems-popover", "problems-popover-close", null));
+  })();
+
+  /* Replay the top-to-bottom item cascade whenever the Tools dropdown expands. */
+  (function () {
+    var menu = document.getElementById("tools-menu");
+    if (!menu) return;
+    var toggle = menu.querySelector(".panel-header .toggle-btn");
+    var body = menu.querySelector(".panel-body");
+    if (!toggle || !body) return;
+    toggle.addEventListener("click", function () {
+      setTimeout(function () {
+        if (menu.classList.contains("minimized")) return;
+        Array.prototype.forEach.call(body.children, function (el) {
+          el.style.animation = "none";
+          void el.offsetWidth;        // force reflow to restart the CSS animation
+          el.style.animation = "";
+        });
+      }, 0);
+    });
   })();
 </script>
 <script src="{{ url_for('static', filename='js/panel-controls.js') }}"></script>

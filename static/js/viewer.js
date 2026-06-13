@@ -24,6 +24,22 @@
   const scanWholeAreaBtn = document.getElementById("scan-whole-area-btn");
   const scanCategorySelect = document.getElementById("scan-category-select");
   const scanModeCancelBtn = document.getElementById("scan-mode-cancel-btn");
+  const scanQualityGroup = document.getElementById("scan-quality-group");
+
+  // Scan quality/accuracy mode chosen in the picker. Drives how many 360° views
+  // are captured (client) and how deep the detector runs (server).
+  //   fast    → 4 views, YOLO only (no open-vocab pass)
+  //   normal  → 6 views, YOLO + open-vocab hybrid (default)
+  //   complex → 8 views, YOLO + open-vocab hybrid at lower thresholds
+  let scanQualityMode = "normal";
+  const SCAN_MODE_ANGLES = {
+    fast:    [0, 90, 180, 270],
+    normal:  [0, 60, 120, 180, 240, 300],
+    complex: [0, 45, 90, 135, 180, 225, 270, 315],
+  };
+  function _scanStepAngles() {
+    return SCAN_MODE_ANGLES[scanQualityMode] || SCAN_MODE_ANGLES.normal;
+  }
 
   let sdk = null;
   let currentSweepUuid = null;
@@ -325,6 +341,48 @@
     if (sloBadgesEl) sloBadgesEl.innerHTML = "";
   }
 
+  // ── Centered agent loader (Auto-Tag / Scan) ───────────────────────────────
+  const agentLoaderEl     = document.getElementById("agent-loader");
+  const agentLoaderTitle  = document.getElementById("agent-loader-title");
+  const agentLoaderStatus = document.getElementById("agent-loader-status");
+  const agentLoaderBar    = document.getElementById("agent-loader-bar");
+  const agentLoaderStop   = document.getElementById("agent-loader-stop");
+  let   _agentLoaderStopFn = null;
+
+  function setAgentLoaderProgress(pct) {
+    if (!agentLoaderBar) return;
+    const wrap = agentLoaderBar.parentElement;
+    if (pct == null || isNaN(pct)) {
+      if (wrap) wrap.classList.add("indeterminate");
+      agentLoaderBar.style.width = "";
+    } else {
+      if (wrap) wrap.classList.remove("indeterminate");
+      agentLoaderBar.style.width = Math.max(0, Math.min(100, pct)) + "%";
+    }
+  }
+  function showAgentLoader(title, onStop) {
+    if (!agentLoaderEl) return;
+    if (agentLoaderTitle) agentLoaderTitle.textContent = title || "Working…";
+    if (agentLoaderStatus) agentLoaderStatus.textContent = "";
+    _agentLoaderStopFn = onStop || null;
+    if (agentLoaderStop) agentLoaderStop.style.display = onStop ? "" : "none";
+    setAgentLoaderProgress(null);
+    agentLoaderEl.style.display = "flex";
+  }
+  function setAgentLoader(status, pct) {
+    if (agentLoaderStatus && status != null) agentLoaderStatus.textContent = status;
+    if (arguments.length > 1) setAgentLoaderProgress(pct);
+  }
+  function hideAgentLoader() {
+    if (agentLoaderEl) agentLoaderEl.style.display = "none";
+    _agentLoaderStopFn = null;
+  }
+  if (agentLoaderStop) {
+    agentLoaderStop.addEventListener("click", function () {
+      if (_agentLoaderStopFn) { _agentLoaderStopFn(); }
+    });
+  }
+
   // ── Feature 2: Scan Highlight Overlay helpers ─────────────────────────────
 
   const scanHighlightOverlay = document.getElementById("scan-highlight-overlay");
@@ -560,18 +618,78 @@
   // best view and draw the YOLO bbox cached at scan time — no API call.
   async function _highlightScanAsset(assetName, instanceIndex) {
     if (!pendingScanViewData.length) return;
-    const cache  = instanceBboxCache[assetName] || { angle: 0, boxes: [] };
+    const insts  = (instanceBboxCache[assetName] && instanceBboxCache[assetName].instances) || [];
     const hasIdx = instanceIndex != null && !Number.isNaN(instanceIndex);
-    const bbox   = hasIdx ? (cache.boxes[instanceIndex] || null) : (tightBboxCache[assetName] || null);
+    const inst   = hasIdx ? (insts[instanceIndex] || null) : (insts[0] || null);
     const label  = hasIdx ? `${assetName} #${instanceIndex + 1}` : assetName;
 
     clearHighlightOverlay();
     if (shoLabelEl) shoLabelEl.textContent = `🔍 ${label} — locating…`;
     if (scanHighlightOverlay) scanHighlightOverlay.style.display = "block";
 
-    const yaw = (pendingScanBaseRotation.y || 0) + (cache.angle || 0);
-    try { await rotateToYawAtCurrentSweep(yaw, pendingScanBaseRotation.x || 0); } catch (_) {}
-    showHighlightOverlay(label, bbox, { segName: assetName, instanceIndex: hasIdx ? instanceIndex : null });
+    if (inst) {
+      // Cached box from the scan → fly to the exact sweep + camera angle it was
+      // seen at, then outline (camera is genuinely looking at the object).
+      if (inst.sweep_uuid && inst.sweep_uuid !== currentSweepUuid) {
+        await handleNavigate(inst.sweep_uuid);
+        await sleep(1200);
+      }
+      try { await rotateToYawAtCurrentSweep(inst.angle || 0, inst.pitch || 0); } catch (_) {}
+      showHighlightOverlay(label, inst.bbox, { segName: assetName });
+      return;
+    }
+
+    // No cached box: Scout named this item (so the count is real) but the
+    // scan-time box pass didn't localise it (e.g. an open-vocab item in normal/
+    // fast mode). Fly to the frame where Scout saw it best and locate it LIVE so
+    // it can still be outlined — this is what guarantees every listed item is
+    // outline-able, not just the COCO ones.
+    if (shoLabelEl) shoLabelEl.textContent = `🔍 ${label} — flying in to find it…`;
+    const located = await _liveLocateScanAsset(assetName, label);
+    if (!located && shoLabelEl) {
+      shoLabelEl.textContent = `🔍 ${label} — couldn't outline it from any captured view. Try a Complex-mode re-scan.`;
+    }
+  }
+
+  // Live, on-demand localisation for a scanned item that has no cached box.
+  // Returns true if it outlined the item. Caches the box so the next click is
+  // instant.
+  async function _liveLocateScanAsset(assetName, label) {
+    // The captured frame where Scout saw the most of this item is our best shot.
+    let best = null, bestN = 0;
+    pendingScanViewData.forEach((v) => {
+      const c = (v.objects && v.objects[assetName]) || 0;
+      if (c > bestN) { bestN = c; best = v; }
+    });
+    if (!best) return false;
+    try {
+      if (best.sweep_uuid && best.sweep_uuid !== currentSweepUuid) {
+        await handleNavigate(best.sweep_uuid);
+        await sleep(1200);
+      }
+      const ang = (best.absolute_angle != null ? best.absolute_angle : (best.angle || 0));
+      try { await rotateToYawAtCurrentSweep(ang, best.pitch || 0); } catch (_) {}
+      await sleep(300);
+      const img = await captureViewportBase64();
+      const res = await fetch("/api/locate-object", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ object_name: assetName, image_base64: img }),
+      });
+      const data = await res.json().catch(() => ({ ok: false }));
+      if (data.ok && Array.isArray(data.bbox) && data.bbox.length === 4) {
+        const instObj = { sweep_uuid: best.sweep_uuid || null, angle: ang, pitch: best.pitch || 0, bbox: data.bbox };
+        instanceBboxCache[assetName] = instanceBboxCache[assetName] || { instances: [] };
+        instanceBboxCache[assetName].instances = [instObj];
+        tightBboxCache[assetName] = data.bbox;
+        showHighlightOverlay(label, data.bbox, { segName: assetName });
+        return true;
+      }
+    } catch (e) {
+      console.warn("[3DAgent] live locate failed:", e);
+    }
+    return false;
   }
 
   // Outline a faulty asset referenced by a maintenance report's equipment name
@@ -743,11 +861,11 @@
           // Build rows from the CURRENT (possibly edited) count.
           const input = group.querySelector(".scan-item-count-input");
           const count = Math.max(0, parseInt(input && input.value) || 0);
-          const cache = instanceBboxCache[asset] || { boxes: [] };
+          const cacheInsts = (instanceBboxCache[asset] && instanceBboxCache[asset].instances) || [];
 
           let rows = "";
           for (let i = 0; i < count; i++) {
-            const hasBox = !!(cache.boxes && cache.boxes[i]);
+            const hasBox = !!cacheInsts[i];
             rows += `<div class="scan-instance-row">
               <span class="scan-instance-label">${asset} #${i + 1}${hasBox ? "" : " <span class='scan-instance-noloc'>(approx.)</span>"}</span>
               <button type="button" class="scan-instance-hl" data-asset="${asset}" data-index="${i}" title="Highlight ${asset} #${i + 1}">🔆</button>
@@ -787,29 +905,44 @@
     ).join(", ");
   }
 
-  // Collect the primary tight bbox for each detected asset from the boxes YOLO
-  // already produced during the scan. No extra API call — highlight data is
-  // available instantly, sourced from the view where the asset was seen most.
-  // tightBboxCache[name] = [x1,y1,x2,y2] | null  (single value, not wrapped in array).
-  // Returns a resolved Promise so the save handler's `await` still works.
+  // Build per-instance highlight records from the YOLO boxes captured during the
+  // scan. CRITICAL for whole-area scans: each instance must remember the SWEEP and
+  // the ABSOLUTE camera angle it was seen at, otherwise the highlighter rotates the
+  // wrong sweep and outlines a wall. We take the best view PER SWEEP (most boxes)
+  // and keep every box with its sweep/angle/pitch, ordered by prominence so #1 is
+  // the clearest. instanceBboxCache[name] = { instances: [{sweep_uuid,angle,pitch,bbox}] }.
   function _prefetchTightBboxes(counts) {
     tightBboxCache = {};
     instanceBboxCache = {};
+
+    const _absAngle = (v) => (v.absolute_angle != null ? v.absolute_angle : (v.angle || 0));
+
     Object.keys(counts || {}).forEach((name) => {
-      // Pick the view where this asset was seen the most — that view holds the
-      // full set of per-instance boxes that matches the displayed count.
-      let bestView = null, bestCount = -1;
-      pendingScanViewData.forEach((view) => {
-        const c = view.objects[name] || 0;
-        if (c > bestCount) { bestCount = c; bestView = view; }
-      });
-      const allBoxes = (bestView && bestView.bboxes_all && bestView.bboxes_all[name]) || [];
-      const single   = (bestView && bestView.bboxes && bestView.bboxes[name]) || allBoxes[0] || null;
-      tightBboxCache[name]    = single;
-      instanceBboxCache[name] = {
-        angle: bestView ? bestView.angle : 0,
-        boxes: allBoxes,
-      };
+      // One representative box per distinct physical object (geometry-deduped),
+      // so the highlightable instances line up with the de-duplicated count.
+      const clusters = _clusterInstancesForName(name);
+      let instances = clusters.map((c) => ({
+        sweep_uuid: c.rep.sweep_uuid === "_" ? null : c.rep.sweep_uuid,
+        angle: c.rep.angle,
+        pitch: c.rep.pitch,
+        bbox: c.rep.bbox,
+      }));
+
+      // Fallback: no per-instance boxes (e.g. Scout text path) → single primary
+      // box from the view where it was seen the most.
+      if (!instances.length) {
+        let bestView = null, bestCount = -1;
+        pendingScanViewData.forEach((v) => { const cc = (v.objects && v.objects[name]) || 0; if (cc > bestCount) { bestCount = cc; bestView = v; } });
+        const single = (bestView && bestView.bboxes && bestView.bboxes[name]) || null;
+        if (bestView && single) {
+          instances.push({ sweep_uuid: bestView.sweep_uuid || null, angle: _absAngle(bestView), pitch: bestView.pitch || 0, bbox: single });
+        }
+      }
+
+      // Clearest first so "#1" is the easiest to outline.
+      instances.sort((a, b) => _bboxArea(b.bbox) - _bboxArea(a.bbox));
+      instanceBboxCache[name] = { instances };
+      tightBboxCache[name] = instances.length ? instances[0].bbox : null;
     });
     return Promise.resolve();
   }
@@ -911,8 +1044,10 @@
 
     isAutoTagging = true;
     autoTagShouldStop = false;
-    if (autoTagBtn) { autoTagBtn.disabled = false; autoTagBtn.textContent = "⏹ Stop Auto-Tag"; }
+    if (autoTagBtn) { autoTagBtn.disabled = false; var _atl0 = document.getElementById("auto-tag-label"); if (_atl0) _atl0.textContent = "Stop Auto-Tag"; }
     if (autoTagStatusEl) autoTagStatusEl.textContent = "Collecting sweeps…";
+    showAgentLoader("🤖 Auto-tagging locations", function () { autoTagShouldStop = true; setAgentLoader("Stopping…"); });
+    setAgentLoader("Collecting sweeps…", null);
 
     try {
       // Collect all sweeps from the SDK observable
@@ -984,16 +1119,26 @@
       const existingAssets = assetsData.assets || [];
       const taggedUuids = new Set(existingAssets.map(a => a.sweep_uuid));
 
-      // Pre-populate category counters so numbering continues correctly, and
-      // seed the spatial "placed" list from existing tags that have positions.
-      const categoryCounters = {};
-      const placed = [];  // {x, z, floorId, category, label}
+      // Continue room numbering ("Office 2") and per-room sweep numbering
+      // ("Office 1 #3") from any existing tags, and seed the spatial "placed"
+      // list. baseLabel = the room name without the "#n" sweep suffix.
+      const categoryCounters = {};    // category -> highest room number
+      const roomSweepCounters = {};   // baseLabel -> highest sweep number
+      const placed = [];              // {x, z, floorId, category, baseLabel, label}
       existingAssets.forEach(a => {
-        const cat = (a.category || "").trim().toLowerCase();
-        if (cat) {
-          const numMatch = (a.label_name || "").match(/\s(\d+)$/);
-          const num = numMatch ? parseInt(numMatch[1]) : 1;
-          categoryCounters[cat] = Math.max(categoryCounters[cat] || 0, num);
+        const lbl = (a.label_name || "").trim();
+        const sm = lbl.match(/^(.*?)\s*#(\d+)\s*$/);          // "<base> #<n>"
+        const baseLabel = sm ? sm[1].trim() : lbl;
+        if (sm) {
+          roomSweepCounters[baseLabel] = Math.max(roomSweepCounters[baseLabel] || 0, parseInt(sm[2]));
+        }
+        const rm = baseLabel.match(/^(.*?)\s+(\d+)$/);        // "<category> <N>"
+        if (rm) {
+          const ck = rm[1].trim().toLowerCase();
+          categoryCounters[ck] = Math.max(categoryCounters[ck] || 0, parseInt(rm[2]));
+        } else {
+          const cat = (a.category || "").trim().toLowerCase();
+          if (cat) categoryCounters[cat] = Math.max(categoryCounters[cat] || 0, 1);
         }
         const sd = allSweepData[a.sweep_uuid];
         if (sd && sd.position) {
@@ -1001,7 +1146,8 @@
             x: sd.position.x, z: sd.position.z,
             floorId: (sd.floorInfo || {}).id,
             category: (a.category || "").trim(),
-            label: a.label_name,
+            baseLabel: baseLabel,
+            label: lbl,
           });
         }
       });
@@ -1021,6 +1167,7 @@
       const scopeLabel = targetSet ? `${total} selected sweep(s)` : `${total} untagged`;
       appendLine("system", `Found ${allSweeps.length} sweep(s). Auto-tagging ${scopeLabel}…`);
       if (autoTagStatusEl) autoTagStatusEl.textContent = `0 / ${total} tagged`;
+      setAgentLoader(`Tagging ${total} location(s)…`, 0);
 
       // Nearest already-placed point on the same floor, within `radius`.
       function _nearestPlaced(x, z, floorId, radius) {
@@ -1033,6 +1180,7 @@
         return best;
       }
 
+      const taggedResults = [];   // every newly-tagged sweep (for the review modal)
       let tagged = 0;
       for (let i = 0; i < total; i++) {
         if (autoTagShouldStop) { appendLine("system", "⏹ Auto-tagging stopped by user."); break; }
@@ -1043,19 +1191,21 @@
         const floorId = (sd.floorInfo || sweep.floorInfo || {}).id;
 
         let category = null;
-        let label = null;
+        let baseLabel = null;
 
-        // 1) Very close to an already-named point on the same floor → same room,
-        //    inherit its exact label. No camera move, no API call.
+        // 1) Very close to an already-named point on the same floor → SAME ROOM:
+        //    reuse the room's base name (no camera move, no API call).
         const sameRoom = pos ? _nearestPlaced(pos.x, pos.z, floorId, AUTOTAG_ROOM_RADIUS) : null;
         if (sameRoom) {
-          label = sameRoom.label;
+          baseLabel = sameRoom.baseLabel;
           category = sameRoom.category;
           if (autoTagStatusEl) autoTagStatusEl.textContent = `Sweep ${i + 1} / ${total} (same room)…`;
+          setAgentLoader(`Sweep ${i + 1} / ${total} — same room`, Math.round((i / total) * 100));
         } else {
           // 2) New area → travel there, look, and name it WITH nearby context so
           //    the model stays consistent rather than inventing a fresh name.
           if (autoTagStatusEl) autoTagStatusEl.textContent = `Visiting sweep ${i + 1} / ${total}…`;
+          setAgentLoader(`Visiting sweep ${i + 1} / ${total}…`, Math.round((i / total) * 100));
           try {
             await sdk.Sweep.moveTo(sweep.uuid, { transition: sdk.Sweep.Transition.FLY, transitionTime: 1200 });
           } catch (navErr) {
@@ -1069,7 +1219,7 @@
             ? placed.filter(p => (floorId == null || p.floorId == null || String(p.floorId) === String(floorId)) &&
                                  _horizDist(pos.x, pos.z, p.x, p.z) <= AUTOTAG_NEARBY_RADIUS)
             : [];
-          const nearbyNames = Array.from(new Set(nearby.map(p => p.label)));
+          const nearbyBaseNames = Array.from(new Set(nearby.map(p => p.baseLabel)));
 
           let suggestion = null;
           try {
@@ -1078,7 +1228,7 @@
               method: "POST",
               headers: { "Content-Type": "application/json" },
               credentials: "same-origin",
-              body: JSON.stringify({ map_id: mapId, image_base64: imageBase64, nearby_names: nearbyNames }),
+              body: JSON.stringify({ map_id: mapId, image_base64: imageBase64, nearby_names: nearbyBaseNames }),
             });
             const sugData = await sugRes.json().catch(() => ({}));
             suggestion = sugData.suggested_name || null;
@@ -1091,19 +1241,25 @@
             continue;
           }
 
-          // If the model picked an existing nearby label, reuse it (same room);
-          // otherwise it's a new area → assign a fresh numbered label.
-          const match = nearby.find(p => p.label.toLowerCase() === suggestion.toLowerCase());
-          if (match) {
-            label = match.label;
-            category = match.category || suggestion;
+          // If the model named an existing nearby room, reuse that room;
+          // otherwise it's a new room → assign a fresh numbered room name.
+          const matchBase = nearbyBaseNames.find(b => b.toLowerCase() === suggestion.toLowerCase());
+          if (matchBase) {
+            baseLabel = matchBase;
+            const mp = nearby.find(p => p.baseLabel === matchBase);
+            category = mp ? mp.category : suggestion;
           } else {
             category = suggestion;
             const catKey = category.toLowerCase();
             categoryCounters[catKey] = (categoryCounters[catKey] || 0) + 1;
-            label = `${category} ${categoryCounters[catKey]}`;
+            baseLabel = `${category} ${categoryCounters[catKey]}`;
           }
         }
+
+        // Every sweep gets a UNIQUE label within its room so none overwrite
+        // each other — e.g. "Office 1 #1", "Office 1 #2".
+        roomSweepCounters[baseLabel] = (roomSweepCounters[baseLabel] || 0) + 1;
+        const label = `${baseLabel} #${roomSweepCounters[baseLabel]}`;
 
         try {
           const markRes = await fetch("/api/mark-asset", {
@@ -1115,7 +1271,11 @@
           const markData = await markRes.json().catch(() => ({}));
           if (markData.ok) {
             tagged++;
-            if (pos) placed.push({ x: pos.x, z: pos.z, floorId: floorId, category: category || "", label: label });
+            if (pos) placed.push({ x: pos.x, z: pos.z, floorId: floorId, category: category || "", baseLabel: baseLabel, label: label });
+            taggedResults.push({
+              asset_id: markData.asset_id, label: label, category: category || "",
+              sweep_uuid: sweep.uuid, x: pos ? pos.x : null, z: pos ? pos.z : null, floorId: floorId,
+            });
             appendLine("agent", `  ✓ Sweep ${i + 1}: "${label}"${sameRoom ? " (same room)" : ""}`);
           }
         } catch (e) {
@@ -1123,6 +1283,7 @@
         }
 
         if (autoTagStatusEl) autoTagStatusEl.textContent = `${tagged} / ${total} tagged`;
+        setAgentLoader(`${tagged} / ${total} tagged`, Math.round(((i + 1) / total) * 100));
       }
 
       if (!autoTagShouldStop) {
@@ -1130,6 +1291,7 @@
       }
       if (autoTagStatusEl) autoTagStatusEl.textContent = autoTagShouldStop ? `Stopped — ${tagged} tagged` : `Done — ${tagged} tagged`;
       if (tagged > 0) await _refreshLocationData();
+      if (taggedResults.length) openAutoTagResults(taggedResults);
     } catch (err) {
       console.error("[3DAgent] autoTagLocations error:", err);
       appendLine("system", "❌ Auto-tagging failed: " + (err.message || String(err)));
@@ -1137,7 +1299,8 @@
     } finally {
       isAutoTagging = false;
       autoTagShouldStop = false;
-      if (autoTagBtn) { autoTagBtn.disabled = false; autoTagBtn.textContent = "🤖 Auto-Tag All Locations"; }
+      hideAgentLoader();
+      if (autoTagBtn) { autoTagBtn.disabled = false; var _atl1 = document.getElementById("auto-tag-label"); if (_atl1) _atl1.textContent = "Auto-Tag Locations"; }
     }
   }
 
@@ -1246,6 +1409,72 @@
   }
 
   // ── Build aggregated counts from per-view sightings ───────────────────────
+
+  // ── Geometry-based instance de-duplication ───────────────────────────────
+  // The same physical object is seen across several of the 6 overlapping views,
+  // so a naive MAX-across-views undercounts objects spread around a room (3
+  // chairs north + 3 chairs south reads as 3). Instead we project every detected
+  // box to a world bearing (camera yaw + horizontal offset within the frame) and
+  // cluster instances that fall at the same bearing in the same sweep — that
+  // collapses re-sightings of one object while keeping genuinely distinct ones.
+  const SCAN_HFOV_DEG        = 90;   // Matterport perspective horizontal FOV (~16:9)
+  const SCAN_MERGE_ANGLE     = 20;   // same-sweep bearings within this (deg) = same object
+  const SCAN_MERGE_SIZE_RATIO = 3.0; // boxes whose areas differ beyond this aren't merged
+
+  function _norm360(d) { d %= 360; return d < 0 ? d + 360 : d; }
+  function _angDiff(a, b) { const d = Math.abs(_norm360(a) - _norm360(b)) % 360; return d > 180 ? 360 - d : d; }
+  function _bboxArea(b) { return (b && b.length === 4) ? Math.max(0, b[2] - b[0]) * Math.max(0, b[3] - b[1]) : 0; }
+
+  // Every detected box of `name` across all captured views, tagged with the world
+  // bearing it sits at and which view it came from.
+  function _gatherInstances(name) {
+    const out = [];
+    pendingScanViewData.forEach((v, vi) => {
+      const boxes = (v.bboxes_all && v.bboxes_all[name]) || [];
+      const abs = (v.absolute_angle != null ? v.absolute_angle : (v.angle || 0));
+      boxes.forEach((bbox) => {
+        if (!bbox || bbox.length !== 4) return;
+        const cx = (bbox[0] + bbox[2]) / 2;
+        out.push({
+          sweep_uuid: v.sweep_uuid || "_",
+          viewKey: (v.sweep_uuid || "_") + "#" + vi,
+          angle: abs,
+          pitch: v.pitch || 0,
+          bbox,
+          bearing: _norm360(abs + (cx - 0.5) * SCAN_HFOV_DEG),
+          area: _bboxArea(bbox),
+        });
+      });
+    });
+    return out;
+  }
+
+  // Cluster the gathered instances into distinct physical objects. Each cluster's
+  // representative is its largest (closest/clearest) box. Two boxes from the SAME
+  // view are never merged, which guarantees the result is never below any single
+  // view's count.
+  function _clusterInstancesForName(name) {
+    const items = _gatherInstances(name);
+    if (!items.length) return [];
+    items.sort((a, b) => b.area - a.area); // largest first → rep is the clearest box
+    const clusters = [];
+    items.forEach((it) => {
+      let target = null;
+      for (const c of clusters) {
+        if (c.sweep !== it.sweep_uuid) continue;
+        if (_angDiff(c.bearing, it.bearing) > SCAN_MERGE_ANGLE) continue;
+        if (c.members.some((m) => m.viewKey === it.viewKey)) continue; // same frame → distinct
+        const r = (it.area > 0 && c.rep.area > 0)
+          ? Math.max(it.area / c.rep.area, c.rep.area / it.area) : 1;
+        if (r > SCAN_MERGE_SIZE_RATIO) continue; // near vs far object at same bearing
+        target = c;
+        break;
+      }
+      if (target) target.members.push(it);
+      else clusters.push({ sweep: it.sweep_uuid, bearing: it.bearing, rep: it, members: [it] });
+    });
+    return clusters;
+  }
 
   function _buildCounts(sightings, totalViews) {
     const counts = {};
@@ -1390,6 +1619,8 @@
     isScanning = true;
     scanShouldStop = false;
     setScanButtonState(true, "⏹ Stop Scan");
+    showAgentLoader("📷 Scanning area", function () { scanShouldStop = true; setAgentLoader("Stopping…"); });
+    setAgentLoader("Preparing scan…", null);
 
     try {
       if (category) {
@@ -1403,6 +1634,7 @@
     } finally {
       isScanning = false;
       scanShouldStop = false;
+      hideAgentLoader();
       setScanButtonState(false);
     }
   }
@@ -1416,10 +1648,11 @@
       ""
     );
 
-    appendLine("system", `📸 Starting 360° scan${areaName ? " of " + areaName : ""}… (6 angles)`);
+    const scanMode = scanQualityMode;
+    const stepAngles = _scanStepAngles();
+    appendLine("system", `📸 Starting 360° scan${areaName ? " of " + areaName : ""}… (${scanMode} mode, ${stepAngles.length} angles)`);
     const baseRotation = await getCurrentRotation();
     pendingScanBaseRotation = baseRotation;
-    const stepAngles = [0, 60, 120, 180, 240, 300];
     const sightings = {};
     pendingScanViewData = [];
 
@@ -1430,17 +1663,20 @@
       appendLine("system", `📷 View ${i + 1}/${stepAngles.length}: ${stepAngles[i]}°…`);
       await rotateToYawAtCurrentSweep(yaw, baseRotation.x || 0);
       appendLine("system", `🤖 Analyzing view ${i + 1}/${stepAngles.length}…`);
+      setAgentLoader(`Analyzing view ${i + 1} / ${stepAngles.length}…`, Math.round((i / stepAngles.length) * 100));
       const imageBase64 = await captureViewportBase64();
       const scanResult = await postScanAsset({
         map_id: mapId,
         sweep_uuid: currentSweepUuid,
         image_base64: imageBase64,
         area_name: areaName || undefined,
+        mode: scanMode,
       });
       mergeViewDetections(sightings, scanResult.objects || {});
       pendingScanViewData.push({
         angle: stepAngles[i],
         absolute_angle: (baseRotation.y || 0) + stepAngles[i],
+        pitch: baseRotation.x || 0,
         sweep_uuid: currentSweepUuid,
         objects: scanResult.objects || {},
         bboxes: scanResult.positions || {},
@@ -1451,10 +1687,12 @@
     }
 
     clearLiveOverlay();
+    // Counts come from Scout (per-frame), aggregated as MAX across the views —
+    // this avoids the geometry-dedup overcounting that turned 1 bed into several.
     const counts = _buildCounts(sightings, stepAngles.length);
-    pendingScanCounts = counts;
     pendingScanSweepUuid = currentSweepUuid;
-    _prefetchPromise = _prefetchTightBboxes(counts);
+    _prefetchPromise = _prefetchTightBboxes(counts);  // boxes for highlighting only
+    pendingScanCounts = counts;
     renderScanReview(counts);
     appendLine("agent", `✅ Scan complete. ${formatCountsForChat(counts)}`);
     appendLine("system", "Review detected items below, then click 'Add to assets'.");
@@ -1477,8 +1715,9 @@
       return;
     }
 
-    appendLine("system", `🔍 Scanning ${sweeps.length} sweep(s) in "${category}"…`);
-    const stepAngles = [0, 60, 120, 180, 240, 300];
+    const scanMode = scanQualityMode;
+    const stepAngles = _scanStepAngles();
+    appendLine("system", `🔍 Scanning ${sweeps.length} sweep(s) in "${category}"… (${scanMode} mode, ${stepAngles.length} angles each)`);
     const aggregatedSightings = {};
 
     for (let i = 0; i < sweeps.length; i++) {
@@ -1487,6 +1726,7 @@
       const sweep = sweeps[i];
       setScanButtonState(true, `⏹ Stop (${i + 1}/${sweeps.length})`);
       appendLine("system", `📍 ${sweep.label_name || sweep.sweep_uuid} (${i + 1}/${sweeps.length})…`);
+      setAgentLoader(`Scanning ${sweep.label_name || "sweep"} (${i + 1} / ${sweeps.length})…`, Math.round((i / sweeps.length) * 100));
 
       await handleNavigate(sweep.sweep_uuid);
       await sleep(2200);
@@ -1508,6 +1748,7 @@
           sweep_uuid: sweep.sweep_uuid,
           image_base64: imageBase64,
           area_name: category,
+          mode: scanMode,
         });
         mergeViewDetections(aggregatedSightings, scanResult.objects || {});
         mergeViewDetections(sweepLocalSightings, scanResult.objects || {});
@@ -1515,6 +1756,7 @@
         pendingScanViewData.push({
           angle: angle,
           absolute_angle: (baseRotation.y || 0) + angle,
+          pitch: baseRotation.x || 0,
           sweep_uuid: sweep.sweep_uuid,
           objects: scanResult.objects || {},
           bboxes: scanResult.positions || {},
@@ -1530,9 +1772,9 @@
 
     clearLiveOverlay();
     const counts = _buildCounts(aggregatedSightings, sweeps.length * stepAngles.length);
-    pendingScanCounts = counts;
     if (scanAreaNameInput) scanAreaNameInput.value = category;
-    _prefetchPromise = _prefetchTightBboxes(counts);
+    _prefetchPromise = _prefetchTightBboxes(counts);  // boxes for highlighting only
+    pendingScanCounts = counts;
     renderScanReview(counts);
     if (!scanShouldStop) {
       appendLine("agent", `✅ Whole-area scan of "${category}" (${sweeps.length} sweeps) complete. ${formatCountsForChat(counts)}`);
@@ -2041,12 +2283,27 @@
     scanModeCancelBtn.addEventListener("click", hideScanModePicker);
   }
 
+  if (scanQualityGroup) {
+    scanQualityGroup.addEventListener("click", function (e) {
+      const opt = e.target.closest(".scan-quality-opt");
+      if (!opt || !scanQualityGroup.contains(opt)) return;
+      const mode = opt.getAttribute("data-mode");
+      if (!mode || !SCAN_MODE_ANGLES[mode]) return;
+      scanQualityMode = mode;
+      scanQualityGroup.querySelectorAll(".scan-quality-opt").forEach(function (el) {
+        const on = el === opt;
+        el.classList.toggle("is-selected", on);
+        el.setAttribute("aria-checked", on ? "true" : "false");
+      });
+    });
+  }
+
   if (autoTagBtn) {
     autoTagBtn.addEventListener("click", function () {
       if (isAutoTagging) {
         autoTagShouldStop = true;
         autoTagBtn.disabled = true;
-        autoTagBtn.textContent = "⏹ Stopping…";
+        var _atl2 = document.getElementById("auto-tag-label"); if (_atl2) _atl2.textContent = "Stopping…";
       } else {
         openAutoTagFloorplan();
       }
@@ -2263,6 +2520,161 @@
     if (e.target === autoTagFp) closeAutoTagFloorplan();
   });
 
+  // ── Auto-Tag Results — review/confirm newly tagged sweeps (hover + CRUD) ────
+  const autoTagResultsEl      = document.getElementById("autotag-results");
+  const autoTagResultsCanvas  = document.getElementById("autotag-results-canvas");
+  const autoTagResultsList     = document.getElementById("autotag-results-list");
+  const autoTagResultsTooltip = document.getElementById("autotag-results-tooltip");
+  const autoTagResultsTitle   = document.getElementById("autotag-results-title");
+  const autoTagResultsClose   = document.getElementById("autotag-results-close");
+  const autoTagResultsDone    = document.getElementById("autotag-results-done");
+
+  let _autoTagResults = [];
+  let _arHit = [];
+  let _arHoverIdx = -1;
+
+  function openAutoTagResults(results) {
+    _autoTagResults = (results || []).slice();
+    _arHoverIdx = -1;
+    if (autoTagResultsTitle) autoTagResultsTitle.textContent = `✅ Auto-Tag Results — ${_autoTagResults.length} sweep(s) tagged`;
+    renderAutoTagResultsList();
+    renderAutoTagResultsCanvas();
+    if (autoTagResultsEl) autoTagResultsEl.style.display = "flex";
+  }
+  function closeAutoTagResults() { if (autoTagResultsEl) autoTagResultsEl.style.display = "none"; }
+
+  function renderAutoTagResultsCanvas() {
+    if (!autoTagResultsCanvas) return;
+    const ctx = autoTagResultsCanvas.getContext("2d");
+    const W = autoTagResultsCanvas.width, H = autoTagResultsCanvas.height;
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "#fafafa"; ctx.fillRect(0, 0, W, H);
+
+    const pts = _autoTagResults.filter(r => r.x != null && r.z != null);
+    _arHit = [];
+    if (!pts.length) {
+      ctx.fillStyle = "rgba(0,0,0,0.4)"; ctx.font = "13px Inter, sans-serif"; ctx.textAlign = "center";
+      ctx.fillText("Tagged sweeps have no plotted positions.", W / 2, H / 2);
+      return;
+    }
+    const proj = _computeProjection(pts.map(r => ({ position: { x: r.x, z: r.z } })), W, H, 36);
+    pts.forEach(r => {
+      const idx = _autoTagResults.indexOf(r);
+      const c = proj.toCanvas({ x: r.x, z: r.z });
+      const hovered = idx === _arHoverIdx;
+      ctx.beginPath(); ctx.arc(c.x, c.y, hovered ? 7 : 5, 0, Math.PI * 2);
+      ctx.fillStyle = hovered ? "#0070f3" : "#16a34a"; ctx.fill();
+      ctx.lineWidth = 1.4; ctx.strokeStyle = hovered ? "#0a4fb0" : "#0f7a37"; ctx.stroke();
+      if (hovered) {
+        const short = r.label.length > 18 ? r.label.slice(0, 16) + "…" : r.label;
+        ctx.font = "600 10px Inter, sans-serif"; ctx.textAlign = "center";
+        ctx.fillStyle = "#111"; ctx.shadowColor = "rgba(255,255,255,0.95)"; ctx.shadowBlur = 4;
+        ctx.fillText(short, c.x, c.y - 11); ctx.shadowBlur = 0;
+      }
+      _arHit.push({ idx: idx, x: c.x, y: c.y });
+    });
+  }
+
+  function _highlightArRow(idx) {
+    if (!autoTagResultsList) return;
+    autoTagResultsList.querySelectorAll(".ar-row").forEach(row => {
+      row.classList.toggle("ar-row--hover", parseInt(row.dataset.idx) === idx);
+    });
+    if (idx >= 0) {
+      const el = autoTagResultsList.querySelector(`.ar-row[data-idx="${idx}"]`);
+      if (el) el.scrollIntoView({ block: "nearest" });
+    }
+  }
+
+  function renderAutoTagResultsList() {
+    if (!autoTagResultsList) return;
+    if (!_autoTagResults.length) {
+      autoTagResultsList.innerHTML = `<div class="ap-empty">No tags remaining.</div>`;
+      return;
+    }
+    autoTagResultsList.innerHTML = _autoTagResults.map((r, idx) => `
+      <div class="ar-row" data-idx="${idx}" data-id="${r.asset_id}">
+        <input type="text" class="ar-row-input" value="${_escAttr(r.label)}" data-id="${r.asset_id}">
+        <span class="ar-row-cat">${r.category || ""}</span>
+        <div class="ar-row-actions">
+          ${r.sweep_uuid ? `<button type="button" class="btn small secondary ar-locate" data-sweep="${_escAttr(r.sweep_uuid)}" title="Fly here">▶</button>` : ""}
+          <button type="button" class="btn small danger ar-del" data-id="${r.asset_id}" title="Delete">🗑</button>
+        </div>
+      </div>`).join("");
+
+    autoTagResultsList.querySelectorAll(".ar-row").forEach(row => {
+      const idx = parseInt(row.dataset.idx);
+      row.addEventListener("mouseenter", () => { _arHoverIdx = idx; renderAutoTagResultsCanvas(); });
+      row.addEventListener("mouseleave", () => { _arHoverIdx = -1; renderAutoTagResultsCanvas(); });
+    });
+
+    autoTagResultsList.querySelectorAll(".ar-row-input").forEach(inp => {
+      inp.addEventListener("change", async () => {
+        const id = inp.dataset.id;
+        const newName = (inp.value || "").trim();
+        const r = _autoTagResults.find(x => String(x.asset_id) === String(id));
+        if (!r || !newName || newName === r.label) return;
+        try {
+          const res = await fetch(`/api/spaces/${mapId}/assets/${id}`, {
+            method: "PUT", headers: { "Content-Type": "application/json" }, credentials: "same-origin",
+            body: JSON.stringify({ label_name: newName }),
+          });
+          const d = await res.json().catch(() => ({}));
+          if (d.ok) { r.label = newName; renderAutoTagResultsCanvas(); await _refreshLocationData(); }
+          else { appendLine("system", "Rename failed: " + (d.error || "unknown")); inp.value = r.label; }
+        } catch (e) { appendLine("system", "Rename error: " + e.message); inp.value = r.label; }
+      });
+    });
+
+    autoTagResultsList.querySelectorAll(".ar-locate").forEach(btn => {
+      btn.addEventListener("click", () => { handleNavigate(btn.dataset.sweep); });
+    });
+
+    autoTagResultsList.querySelectorAll(".ar-del").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const id = btn.dataset.id;
+        if (!confirm("Delete this tagged location?")) return;
+        btn.disabled = true;
+        try {
+          const res = await fetch(`/api/spaces/${mapId}/assets/${id}`, { method: "DELETE", credentials: "same-origin" });
+          const d = await res.json().catch(() => ({}));
+          if (d.ok) {
+            _autoTagResults = _autoTagResults.filter(x => String(x.asset_id) !== String(id));
+            if (autoTagResultsTitle) autoTagResultsTitle.textContent = `✅ Auto-Tag Results — ${_autoTagResults.length} sweep(s) tagged`;
+            renderAutoTagResultsList(); renderAutoTagResultsCanvas();
+            await _refreshLocationData();
+          } else { appendLine("system", "Delete failed: " + (d.error || "unknown")); btn.disabled = false; }
+        } catch (e) { appendLine("system", "Delete error: " + e.message); btn.disabled = false; }
+      });
+    });
+  }
+
+  if (autoTagResultsCanvas) {
+    autoTagResultsCanvas.addEventListener("mousemove", e => {
+      const rect = autoTagResultsCanvas.getBoundingClientRect();
+      const sx = autoTagResultsCanvas.width / rect.width, sy = autoTagResultsCanvas.height / rect.height;
+      const x = (e.clientX - rect.left) * sx, y = (e.clientY - rect.top) * sy;
+      let best = -1, bestD = 15 * 15, bestPt = null;
+      _arHit.forEach(h => { const dx = h.x - x, dy = h.y - y, d = dx * dx + dy * dy; if (d < bestD) { bestD = d; best = h.idx; bestPt = h; } });
+      if (best !== _arHoverIdx) { _arHoverIdx = best; renderAutoTagResultsCanvas(); _highlightArRow(best); }
+      if (best >= 0 && bestPt && autoTagResultsTooltip) {
+        autoTagResultsTooltip.textContent = _autoTagResults[best].label;
+        autoTagResultsTooltip.style.left = (bestPt.x / sx) + "px";
+        autoTagResultsTooltip.style.top = (bestPt.y / sy) + "px";
+        autoTagResultsTooltip.style.display = "block";
+      } else if (autoTagResultsTooltip) {
+        autoTagResultsTooltip.style.display = "none";
+      }
+    });
+    autoTagResultsCanvas.addEventListener("mouseleave", () => {
+      _arHoverIdx = -1; if (autoTagResultsTooltip) autoTagResultsTooltip.style.display = "none";
+      renderAutoTagResultsCanvas(); _highlightArRow(-1);
+    });
+  }
+  if (autoTagResultsClose) autoTagResultsClose.addEventListener("click", closeAutoTagResults);
+  if (autoTagResultsDone) autoTagResultsDone.addEventListener("click", closeAutoTagResults);
+  if (autoTagResultsEl) autoTagResultsEl.addEventListener("click", e => { if (e.target === autoTagResultsEl) closeAutoTagResults(); });
+
   if (scanLocationSelect && scanAreaNameInput) {
     scanLocationSelect.addEventListener("change", function () {
       if (scanLocationSelect.value) {
@@ -2311,26 +2723,28 @@
         // same camera angle/sweep but don't have individual bbox positions.
         const bbox_data = {};
         Object.keys(editedCounts).forEach((assetName) => {
+          // Fallback view (for instances beyond what was captured, e.g. count edited up).
           let bestView = null, bestCount = 0;
           pendingScanViewData.forEach((view) => {
             const c = view.objects[assetName] || 0;
             if (c > bestCount) { bestCount = c; bestView = view; }
           });
-          const absoluteAngle = bestView ? bestView.absolute_angle : null;
-          const viewSweep     = bestView ? (bestView.sweep_uuid || null) : null;
+          const fbAngle = bestView ? (bestView.absolute_angle != null ? bestView.absolute_angle : bestView.angle) : null;
+          const fbSweep = bestView ? (bestView.sweep_uuid || null) : null;
+
           const instanceCount = editedCounts[assetName] || 1;
-          // Each instance keeps its OWN YOLO box so every asset has a precise
-          // location/highlight. Instances beyond the detected boxes (e.g. count
-          // edited up) fall back to null and share the view angle.
-          const instBoxes = (instanceBboxCache[assetName] && instanceBboxCache[assetName].boxes) || [];
+          // Each instance keeps its OWN sweep + absolute angle + box so highlights
+          // are precise even when the asset was scanned across multiple sweeps.
+          const capInsts = (instanceBboxCache[assetName] && instanceBboxCache[assetName].instances) || [];
 
           const instances = [];
           for (let i = 0; i < instanceCount; i++) {
+            const it = capInsts[i] || null;
             instances.push({
               serial:     i + 1,
-              bbox:       instBoxes[i] || null,
-              angle:      absoluteAngle,
-              sweep_uuid: viewSweep,
+              bbox:       it ? it.bbox : null,
+              angle:      it ? it.angle : fbAngle,
+              sweep_uuid: it ? it.sweep_uuid : fbSweep,
             });
           }
           bbox_data[assetName] = { instances };
@@ -2562,15 +2976,31 @@
   const assetsPanelOpen  = document.getElementById("assets-panel-open");
   const assetsPanelClose = document.getElementById("assets-panel-close");
 
+  // The Assets/Location panels dock bottom-right where the chat lives — hide the
+  // chat while one is open so they don't overlap, and restore it once both close.
+  function _hideChatForPanel() {
+    const ch = document.getElementById("chat-panel");
+    if (ch && ch.style.display !== "none") { ch.dataset.hiddenByPanel = "1"; ch.style.display = "none"; }
+  }
+  function _restoreChatIfNoPanel() {
+    const assetsOpen = assetsPanelEl && assetsPanelEl.style.display !== "none";
+    const locOpen = locationPanelEl && locationPanelEl.style.display !== "none";
+    if (assetsOpen || locOpen) return;
+    const ch = document.getElementById("chat-panel");
+    if (ch && ch.dataset.hiddenByPanel === "1") { ch.style.display = ""; delete ch.dataset.hiddenByPanel; }
+  }
+
   async function openAssetsPanel() {
     if (!assetsPanelEl) return;
     if (typeof closeLocationPanel === "function") closeLocationPanel();
+    _hideChatForPanel();
     assetsPanelEl.style.display = "flex";
     await refreshAssetsPanel();
   }
 
   function closeAssetsPanel() {
     if (assetsPanelEl) assetsPanelEl.style.display = "none";
+    _restoreChatIfNoPanel();
   }
 
   async function refreshAssetsPanel() {
@@ -2808,6 +3238,7 @@
   async function openLocationPanel() {
     if (!locationPanelEl) return;
     closeAssetsPanel();                 // keep Locations and Assets separate
+    _hideChatForPanel();
     locationPanelEl.style.display = "flex";
     const nameInput = document.getElementById("quick-asset-name");
     if (nameInput) setTimeout(() => nameInput.focus(), 0);
@@ -2815,6 +3246,7 @@
   }
   function closeLocationPanel() {
     if (locationPanelEl) locationPanelEl.style.display = "none";
+    _restoreChatIfNoPanel();
   }
 
   async function refreshLocationPanel() {
@@ -3750,6 +4182,17 @@
           await sleep(1400);
           await _highlightReportedAsset(data.navigate.sweep_uuid, data.navigate.equipment_name);
         }
+      } else if (data.intent === "scan_area") {
+        appendLine("agent", data.response || "Opening the scanner…");
+        const b = document.getElementById("scan-area-btn"); if (b) b.click();
+      } else if (data.intent === "auto_tag") {
+        appendLine("agent", data.response || "Opening Auto-Tag…");
+        const b = document.getElementById("auto-tag-btn"); if (b) b.click();
+      } else if (data.intent === "show_floorplan") {
+        appendLine("agent", data.response || "Opening the floor plan…");
+        const mp = document.getElementById("minimap-popup");
+        const ob = document.getElementById("minimap-open-btn");
+        if (ob && mp && mp.style.display !== "block") ob.click();
       } else if (data.response) {
         appendLine("agent", data.response);
       } else {
@@ -3759,4 +4202,403 @@
       appendLine("system", err.message || String(err));
     }
   });
+
+  /* ══════════════════════════════════════════════════════════════════════
+     SHOWCASE VISUALS — Live HUD · X-Ray Vision · Health Map · Auto-Tour
+     Self-contained: reuses the SDK helpers, scan API and sweep data above.
+     ══════════════════════════════════════════════════════════════════════ */
+
+  const SEV_RANK  = { critical: 4, high: 3, medium: 2, low: 1 };
+  const SEV_COLOR = {
+    critical: { r: 0.86, g: 0.15, b: 0.15 },
+    high:     { r: 0.96, g: 0.45, b: 0.13 },
+    medium:   { r: 0.98, g: 0.75, b: 0.14 },
+    low:      { r: 0.20, g: 0.60, b: 0.86 },
+  };
+  const SEV_COLOR_OK = { r: 0.063, g: 0.639, b: 0.498 };
+
+  async function _fetchJson(url, fallback) {
+    try {
+      const res = await fetch(url, { credentials: "same-origin" });
+      const data = await res.json().catch(() => fallback);
+      return data || fallback;
+    } catch (_) { return fallback; }
+  }
+  function _loadAssetsPanel() {
+    return _fetchJson(`/api/spaces/${mapId}/assets-panel`, { assets: [], scan_summaries: [] });
+  }
+  async function _loadProblems() {
+    const data = await _fetchJson(`/api/spaces/${mapId}/problem-assets`, { problems: [] });
+    const list = data.problems || [];
+    const bySweep = {};
+    list.forEach((p) => { if (p.sweep_uuid) (bySweep[p.sweep_uuid] = bySweep[p.sweep_uuid] || []).push(p); });
+    return { list, bySweep };
+  }
+  function _worstSeverity(problems) {
+    let worst = null, wr = 0;
+    (problems || []).forEach((p) => { const r = SEV_RANK[p.severity] || 2; if (r > wr) { wr = r; worst = p.severity; } });
+    return worst;
+  }
+
+  // ── Live Glass HUD ───────────────────────────────────────────────────────
+  const hudEl     = document.getElementById("live-hud");
+  const hudRoomEl = document.getElementById("live-hud-room");
+  const hudAssetsEl = document.getElementById("live-hud-assets");
+  const hudRoomsEl  = document.getElementById("live-hud-rooms");
+  const hudHealthEl = document.getElementById("live-hud-health");
+
+  function _animateNum(el, to) {
+    if (!el) return;
+    const from = parseInt(el.textContent, 10) || 0;
+    if (from === to) { el.textContent = String(to); return; }
+    const dur = 600, t0 = performance.now();
+    function tick(t) {
+      const k = Math.min(1, (t - t0) / dur);
+      el.textContent = String(Math.round(from + (to - from) * k));
+      if (k < 1) requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  }
+  function updateHudRoom() {
+    if (!hudRoomEl) return;
+    const info = taggedSweepMap[currentSweepUuid];
+    hudRoomEl.textContent = info ? info.label_name : (currentSweepUuid ? "Unmapped area" : "Detecting…");
+  }
+  async function refreshHudStats() {
+    if (!hudEl) return;
+    const [panel, problems] = await Promise.all([_loadAssetsPanel(), _loadProblems()]);
+    const totalAssets = (panel.scan_summaries || []).reduce((s, r) => s + (r.count || 0), 0);
+    const rooms = (panel.assets || []).filter((a) => a.sweep_uuid).length;
+    const probCount = problems.list.length;
+    const worstRank = problems.list.reduce((m, p) => Math.max(m, SEV_RANK[p.severity] || 2), 0);
+    _animateNum(hudAssetsEl, totalAssets);
+    _animateNum(hudRoomsEl, rooms);
+    if (hudHealthEl) {
+      hudHealthEl.textContent = probCount === 0 ? "OK" : String(probCount);
+      hudHealthEl.className = "live-hud-stat-num live-hud-health " +
+        (probCount === 0 ? "is-ok" : worstRank >= 3 ? "is-bad" : "is-warn");
+    }
+  }
+
+  // ── X-Ray Asset Vision ───────────────────────────────────────────────────
+  const xrayOverlay = document.getElementById("xray-overlay");
+  const xraySvg     = document.getElementById("xray-svg");
+  const xrayChips   = document.getElementById("xray-chips");
+  const xrayHudText = document.getElementById("xray-hud-text");
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  let xrayActive = false;
+
+  function _setXrayBtn(on) {
+    const b = document.getElementById("xray-btn");
+    const l = document.getElementById("xray-label");
+    if (b) b.classList.toggle("is-active", on);
+    if (l) l.textContent = on ? "Exit X-Ray" : "X-Ray Vision";
+  }
+  function _clearXrayDraw() {
+    if (xraySvg) while (xraySvg.firstChild) xraySvg.removeChild(xraySvg.firstChild);
+    if (xrayChips) xrayChips.innerHTML = "";
+  }
+  function closeXray() {
+    xrayActive = false;
+    if (xrayOverlay) xrayOverlay.style.display = "none";
+    _clearXrayDraw();
+    _setXrayBtn(false);
+  }
+  function _drawXray(positionsAll, counts) {
+    _clearXrayDraw();
+    let drawn = 0;
+    Object.keys(positionsAll || {}).forEach((name) => {
+      (positionsAll[name] || []).forEach((b, i) => {
+        if (drawn >= 40 || !b || b.length !== 4) return;
+        const [x1, y1, x2, y2] = b;
+        const rect = document.createElementNS(SVG_NS, "rect");
+        rect.setAttribute("x", (x1 * 1000).toFixed(1));
+        rect.setAttribute("y", (y1 * 1000).toFixed(1));
+        rect.setAttribute("width",  ((x2 - x1) * 1000).toFixed(1));
+        rect.setAttribute("height", ((y2 - y1) * 1000).toFixed(1));
+        rect.setAttribute("rx", "8");
+        rect.style.animationDelay = (drawn * 40) + "ms";
+        xraySvg.appendChild(rect);
+        const chip = document.createElement("div");
+        chip.className = "xray-chip";
+        chip.style.left = (((x1 + x2) / 2) * 100).toFixed(2) + "%";
+        chip.style.top  = (y1 * 100).toFixed(2) + "%";
+        chip.style.animationDelay = (drawn * 40 + 120) + "ms";
+        chip.innerHTML = name + ((counts[name] || 0) > 1 ? `<span class="xray-chip-n">#${i + 1}</span>` : "");
+        xrayChips.appendChild(chip);
+        drawn++;
+      });
+    });
+    const totalItems = Object.values(counts || {}).reduce((s, c) => s + c, 0);
+    const totalTypes = Object.keys(counts || {}).length;
+    if (xrayHudText) {
+      xrayHudText.textContent = totalItems
+        ? `${totalItems} asset${totalItems > 1 ? "s" : ""} · ${totalTypes} type${totalTypes > 1 ? "s" : ""} lit up`
+        : "No assets detected in this view";
+    }
+  }
+  async function toggleXray() {
+    if (xrayActive) { closeXray(); return; }
+    if (!sdk || !currentSweepUuid) { appendLine("system", "SDK not ready for X-Ray yet."); return; }
+    xrayActive = true;
+    _setXrayBtn(true);
+    if (xrayOverlay) xrayOverlay.style.display = "block";
+    _clearXrayDraw();
+    if (xrayHudText) xrayHudText.textContent = "Scanning current view…";
+    try {
+      const img = await captureViewportBase64();
+      if (!xrayActive) return;
+      const result = await postScanAsset({
+        map_id: mapId, sweep_uuid: currentSweepUuid, image_base64: img, mode: "normal",
+      });
+      if (!xrayActive) return;
+      _drawXray(result.positions_all || {}, result.objects || {});
+    } catch (e) {
+      if (xrayHudText) xrayHudText.textContent = "X-Ray failed: " + (e.message || String(e));
+    }
+  }
+
+  // ── Digital-Twin Health Map ──────────────────────────────────────────────
+  const healthTags = {}; // sweep_uuid → [tagSid]
+  let healthMapActive = false;
+
+  function _setHealthBtn(on) {
+    const b = document.getElementById("health-map-btn");
+    const l = document.getElementById("health-map-label");
+    if (b) b.classList.toggle("is-active", on);
+    if (l) l.textContent = on ? "Hide Health Map" : "Health Map";
+  }
+  async function _clearHealthMap() {
+    const all = Object.values(healthTags).reduce((acc, v) => acc.concat(v || []), []).filter(Boolean);
+    if (all.length && sdk && sdk.Mattertag) { try { await sdk.Mattertag.remove(all); } catch (_) {} }
+    Object.keys(healthTags).forEach((k) => delete healthTags[k]);
+  }
+  async function toggleHealthMap() {
+    if (healthMapActive) {
+      healthMapActive = false; _setHealthBtn(false);
+      await _clearHealthMap();
+      appendLine("system", "🩺 Health Map hidden.");
+      return;
+    }
+    if (!sdk || !sdk.Mattertag) { appendLine("system", "SDK not ready for the Health Map yet."); return; }
+    healthMapActive = true; _setHealthBtn(true);
+    const [panel, problems] = await Promise.all([_loadAssetsPanel(), _loadProblems()]);
+    const rooms = (panel.assets || []).filter((a) => a.sweep_uuid && allSweepData[a.sweep_uuid] && allSweepData[a.sweep_uuid].position);
+    let placed = 0;
+    for (const a of rooms) {
+      if (!healthMapActive) break; // user toggled off mid-build
+      const sd = allSweepData[a.sweep_uuid];
+      const probs = problems.bySweep[a.sweep_uuid] || [];
+      const worst = _worstSeverity(probs);
+      const color = worst ? SEV_COLOR[worst] : SEV_COLOR_OK;
+      const desc = probs.length
+        ? `${worst.toUpperCase()} — ${probs.length} open issue${probs.length > 1 ? "s" : ""}\n` +
+          probs.slice(0, 4).map((p) => `• ${p.equipment_name} (${p.severity})`).join("\n")
+        : "✓ All equipment healthy";
+      try {
+        const sids = await sdk.Mattertag.add({
+          label: (worst ? "⚠ " : "✓ ") + (a.label_name || "Room"),
+          description: desc,
+          anchorPosition: { x: sd.position.x, y: sd.position.y - 0.1, z: sd.position.z },
+          stemVector: { x: 0, y: 0.45, z: 0 },
+          color: color,
+        });
+        healthTags[a.sweep_uuid] = Array.isArray(sids) ? sids : [sids];
+        placed++;
+      } catch (e) { console.warn("[3DAgent] Health tag failed:", e); }
+    }
+    appendLine("system", placed
+      ? `🩺 Health Map: ${placed} room(s) colour-coded by maintenance status.`
+      : "No tagged rooms to map yet — tag locations or run Auto-Tag first.");
+  }
+
+  // ── Cinematic Auto-Tour ──────────────────────────────────────────────────
+  let tourActive = false, tourPaused = false, tourMuted = false;
+  let tourAbort = false, tourSkip = false;
+
+  function _orderTourStops(stops) {
+    const remaining = stops.slice();
+    const ordered = [];
+    let cur = (currentSweepUuid && allSweepData[currentSweepUuid] && allSweepData[currentSweepUuid].position) || null;
+    while (remaining.length) {
+      let bi = 0, bd = Infinity;
+      for (let i = 0; i < remaining.length; i++) {
+        const p = allSweepData[remaining[i].sweep].position;
+        const d = cur ? ((p.x - cur.x) ** 2 + (p.z - cur.z) ** 2) : i;
+        if (d < bd) { bd = d; bi = i; }
+      }
+      const next = remaining.splice(bi, 1)[0];
+      ordered.push(next);
+      cur = allSweepData[next.sweep].position;
+    }
+    return ordered;
+  }
+  function _waitWhilePaused() {
+    return new Promise((resolve) => {
+      if (!tourPaused) return resolve();
+      const iv = setInterval(() => { if (!tourPaused || tourAbort) { clearInterval(iv); resolve(); } }, 150);
+    });
+  }
+  function _sleepTour(ms) {
+    return new Promise((resolve) => {
+      let elapsed = 0; const step = 100;
+      const iv = setInterval(() => {
+        if (tourAbort || tourSkip) { clearInterval(iv); return resolve(); }
+        if (!tourPaused) elapsed += step;
+        if (elapsed >= ms) { clearInterval(iv); resolve(); }
+      }, step);
+    });
+  }
+  function _narrate(stop) {
+    if (tourMuted || !window.speechSynthesis) return;
+    const top = (stop.assets || []).slice().sort((a, b) => (b.count || 0) - (a.count || 0)).slice(0, 3);
+    let text = `${stop.name}. `;
+    if (top.length) text += "Containing " + top.map((a) => `${a.count} ${a.asset_name}`).join(", ") + ". ";
+    const worst = _worstSeverity(stop.problems);
+    text += stop.problems.length
+      ? `${stop.problems.length} maintenance issue${stop.problems.length > 1 ? "s" : ""}, worst severity ${worst}.`
+      : "All equipment healthy.";
+    try {
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 1.03;
+      window.speechSynthesis.speak(u);
+    } catch (_) {}
+  }
+  function _renderTourCard(stop, i, n) {
+    const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+    set("tour-progress", `Room ${i + 1} / ${n}`);
+    set("tour-card-title", stop.name);
+    const hb = document.getElementById("tour-card-health");
+    if (hb) {
+      const worst = _worstSeverity(stop.problems);
+      if (stop.problems.length) {
+        hb.textContent = `${worst.toUpperCase()} · ${stop.problems.length} issue${stop.problems.length > 1 ? "s" : ""}`;
+        hb.className = "tour-card-health " + (SEV_RANK[worst] >= 3 ? "is-bad" : "is-warn");
+      } else {
+        hb.textContent = "✓ Healthy"; hb.className = "tour-card-health is-ok";
+      }
+    }
+    const ul = document.getElementById("tour-card-assets");
+    if (ul) {
+      ul.innerHTML = "";
+      const top = (stop.assets || []).slice().sort((a, b) => (b.count || 0) - (a.count || 0)).slice(0, 5);
+      if (!top.length) {
+        const li = document.createElement("li"); li.className = "tca-empty"; li.textContent = "No scanned assets yet"; ul.appendChild(li);
+      } else {
+        top.forEach((a) => {
+          const li = document.createElement("li");
+          li.innerHTML = `<span>${a.asset_name}</span><span class="tca-count">${a.count}</span>`;
+          ul.appendChild(li);
+        });
+      }
+    }
+    const card = document.getElementById("tour-card");
+    if (card) { card.classList.remove("is-swap"); void card.offsetWidth; card.classList.add("is-swap"); }
+  }
+  async function _cinematicPan(stop) {
+    let base;
+    try { base = await getCurrentRotation(); } catch (_) { base = { x: 0, y: 0 }; }
+    const offsets = [0, 50, 100, 150, 200, 250, 300];
+    for (const off of offsets) {
+      if (tourAbort || tourSkip) break;
+      await _waitWhilePaused();
+      if (tourAbort || tourSkip) break;
+      try { await rotateToYawAtCurrentSweep((base.y || 0) + off, base.x || 0); } catch (_) {}
+      await _sleepTour(560);
+    }
+  }
+  function _showTourUI() {
+    const o = document.getElementById("tour-overlay"); if (o) o.style.display = "block";
+    const b = document.getElementById("auto-tour-btn"); if (b) b.classList.add("is-active");
+    const l = document.getElementById("auto-tour-label"); if (l) l.textContent = "Stop Tour";
+  }
+  function endAutoTour() {
+    tourActive = false; tourPaused = false;
+    const o = document.getElementById("tour-overlay"); if (o) o.style.display = "none";
+    const b = document.getElementById("auto-tour-btn"); if (b) b.classList.remove("is-active");
+    const l = document.getElementById("auto-tour-label"); if (l) l.textContent = "Auto-Tour";
+    const pb = document.getElementById("tour-pause"); if (pb) pb.textContent = "⏸ Pause";
+    try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (_) {}
+  }
+  async function startAutoTour() {
+    if (tourActive) return;
+    if (!sdk || !sdk.Sweep) { appendLine("system", "SDK not ready for the Auto-Tour yet."); return; }
+    const [panel, problems] = await Promise.all([_loadAssetsPanel(), _loadProblems()]);
+    const summariesBySweep = {};
+    (panel.scan_summaries || []).forEach((s) => { if (s.sweep_uuid) (summariesBySweep[s.sweep_uuid] = summariesBySweep[s.sweep_uuid] || []).push(s); });
+    const seen = {};
+    let stops = (panel.assets || [])
+      .filter((a) => a.sweep_uuid && allSweepData[a.sweep_uuid] && allSweepData[a.sweep_uuid].position)
+      .filter((a) => (seen[a.sweep_uuid] ? false : (seen[a.sweep_uuid] = true)))
+      .map((a) => ({
+        sweep: a.sweep_uuid,
+        name: a.label_name || a.category || "Room",
+        problems: problems.bySweep[a.sweep_uuid] || [],
+        assets: summariesBySweep[a.sweep_uuid] || [],
+      }));
+    if (!stops.length) { appendLine("system", "No tagged rooms to tour yet — tag locations or run Auto-Tag first."); return; }
+    stops = _orderTourStops(stops);
+
+    tourActive = true; tourAbort = false; tourPaused = false;
+    _showTourUI();
+    appendLine("system", `🎬 Auto-Tour started — flying through ${stops.length} room(s).`);
+    for (let i = 0; i < stops.length; i++) {
+      if (tourAbort) break;
+      tourSkip = false;
+      const stop = stops[i];
+      try { await handleNavigate(stop.sweep); } catch (_) {}
+      if (tourAbort) break;
+      await _sleepTour(2100); // let the fly-to settle
+      if (tourAbort) break;
+      _renderTourCard(stop, i, stops.length);
+      _narrate(stop);
+      await _cinematicPan(stop);
+    }
+    if (!tourAbort) appendLine("agent", "✅ Auto-Tour complete.");
+    endAutoTour();
+  }
+
+  // ── Showcase wiring + HUD bootstrap ──────────────────────────────────────
+  (function initShowcase() {
+    const xrayBtn = document.getElementById("xray-btn");
+    if (xrayBtn) xrayBtn.addEventListener("click", toggleXray);
+    const xrayExit = document.getElementById("xray-exit");
+    if (xrayExit) xrayExit.addEventListener("click", closeXray);
+
+    const healthBtn = document.getElementById("health-map-btn");
+    if (healthBtn) healthBtn.addEventListener("click", toggleHealthMap);
+
+    const tourBtn = document.getElementById("auto-tour-btn");
+    if (tourBtn) tourBtn.addEventListener("click", function () {
+      if (tourActive) { tourAbort = true; tourSkip = true; tourPaused = false; endAutoTour(); }
+      else startAutoTour();
+    });
+    const tourPauseBtn = document.getElementById("tour-pause");
+    if (tourPauseBtn) tourPauseBtn.addEventListener("click", function () {
+      tourPaused = !tourPaused;
+      tourPauseBtn.textContent = tourPaused ? "▶ Resume" : "⏸ Pause";
+      try { if (window.speechSynthesis) { tourPaused ? window.speechSynthesis.pause() : window.speechSynthesis.resume(); } } catch (_) {}
+    });
+    const tourSkipBtn = document.getElementById("tour-skip");
+    if (tourSkipBtn) tourSkipBtn.addEventListener("click", function () { tourSkip = true; });
+    const tourMuteBtn = document.getElementById("tour-mute");
+    if (tourMuteBtn) tourMuteBtn.addEventListener("click", function () {
+      tourMuted = !tourMuted;
+      tourMuteBtn.textContent = tourMuted ? "🔇 Muted" : "🔊 Voice";
+      try { if (tourMuted && window.speechSynthesis) window.speechSynthesis.cancel(); } catch (_) {}
+    });
+    const tourExitBtn = document.getElementById("tour-exit");
+    if (tourExitBtn) tourExitBtn.addEventListener("click", function () {
+      tourAbort = true; tourSkip = true; tourPaused = false; endAutoTour();
+    });
+
+    if (hudEl) {
+      hudEl.style.display = "block";
+      updateHudRoom();
+      refreshHudStats();
+      setInterval(updateHudRoom, 1200);
+      setInterval(refreshHudStats, 30000);
+    }
+  })();
 })();

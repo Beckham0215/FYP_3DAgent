@@ -44,22 +44,26 @@ def route_intent(user_message: str, asset_labels: list[str], last_queried_area: 
         "Classify the user message into exactly one intent:\n"
         "- where_am_i: user asks about their current location, which room or area they are in right now (e.g. 'where am I', 'what room is this', 'which location am I in', 'what place is this', 'tell me my current location').\n"
         "- react_query: user has a complex multi-step planning request requiring room suitability verification (e.g. 'I need a meeting room for 10 people', 'find a room that fits 15 people', 'which room has enough chairs for a seminar', 'I need to host a dinner for 8 people', 'set up a conference for 20 attendees').\n"
-        "- query_assets: user asks about what assets/items are in a specific room or area (e.g. 'what are the assets in bedroom 1', 'how many closets are in bedroom 1', 'what furniture is in the kitchen', 'list items in living room').\n"
+        "- query_assets: user asks WHAT items are in a room/area OR HOW MANY of a specific item there are (e.g. 'what are the assets in bedroom 1', 'how many chairs in the kitchen', 'how many chairs in this location', 'how many tables are here', 'what furniture is in the living room', 'how many chairs in total'). Put the specific item (SINGULAR, e.g. 'chair') in asset_name when they ask about one item type, else null.\n"
+        "- list_locations: user asks what locations/rooms/areas exist or are tagged (e.g. 'what locations are there', 'list all rooms', 'what areas have been tagged', 'show me all tagged locations', 'how many rooms are there').\n"
         "- report_issue: user wants to report a fault, damage, or maintenance problem with a specific asset/equipment (e.g. 'report chair #1 has a broken leg', 'the elevator is not working', 'log a maintenance issue for the AC unit', 'chair 2 is damaged and wobbly', 'mark the projector as faulty').\n"
         "- list_problems: user asks which assets/equipment have problems, faults, or pending maintenance (e.g. 'what assets have problems', 'show faulty equipment', 'any maintenance issues', 'what needs fixing', 'list reported problems').\n"
+        "- scan_area: user wants to scan/detect the assets in the current area or a room (e.g. 'scan this area', 'scan the room for assets', 'detect the objects here', 'run a scan', 'scan for items').\n"
+        "- auto_tag: user wants to automatically tag/label all the locations (e.g. 'auto tag all locations', 'auto-tag this floor', 'automatically label all the rooms', 'auto tag everything').\n"
+        "- show_floorplan: user wants the floor plan / map / minimap (e.g. 'show the floor plan', 'open the map', 'show me the minimap', 'display the floor map').\n"
         "- navigate: user wants to go to a place, room, tagged sweep, OR a specific physical object/asset (e.g. 'take me to the kitchen', 'go to bedroom', 'bring me to the fire extinguisher', 'navigate to forklift', 'take me to the nearest chair').\n"
         "- visual: user asks about what is visible in the current view, colors, objects, 'what do you see', 'is there a chair', 'describe this view'.\n"
         "- mark_asset: user wants to tag or mark the CURRENT location with a name (e.g. 'mark this as kitchen', 'tag this place as bedroom', 'help me mark this location as office').\n"
         "- activity: user wants to do an activity that requires going to a specific location (e.g. 'I want to cook', 'I want to sleep', 'I need to work').\n"
         "- conversational: greetings, small talk, general questions not about the current view or moving in the space.\n\n"
         "Respond with ONLY valid JSON (no markdown fences):\n"
-        '{"intent":"navigate"|"visual"|"mark_asset"|"activity"|"conversational"|"query_assets"|"react_query"|"where_am_i"|"report_issue"|"list_problems","destination_label":string or null,"asset_name":string or null,"query_area":string or null,"reply":string or null}\n'
+        '{"intent":"navigate"|"visual"|"mark_asset"|"activity"|"conversational"|"query_assets"|"react_query"|"where_am_i"|"report_issue"|"list_problems"|"list_locations"|"scan_area"|"auto_tag"|"show_floorplan","destination_label":string or null,"asset_name":string or null,"query_area":string or null,"reply":string or null}\n'
         "Rules:\n"
         "- For report_issue: put the faulty asset/equipment name (including any number, e.g. 'chair #1') in asset_name. Set the other fields to null.\n"
-        "- For list_problems: set all other fields to null.\n"
+        "- For list_problems, list_locations, scan_area, auto_tag, show_floorplan: set all other fields to null.\n"
         "- For where_am_i: set all other fields to null. This triggers a database lookup of the user's current location.\n"
         "- For react_query: set all other fields to null. This triggers multi-step agentic reasoning.\n"
-        "- For query_assets: extract the room/area name and put it in query_area. If no room is mentioned, use the MEMORY CONTEXT area. Set destination_label and asset_name to null.\n"
+        "- For query_assets: put the specific item type (SINGULAR, e.g. 'chair') in asset_name if they ask about ONE item type, else null. For the area in query_area: a named room -> that exact name; 'here'/'this location'/'this room'/'this area'/'current' -> '__current__'; whole space/'in total'/'overall'/'anywhere'/'all rooms' -> '__all__'; if no area is mentioned use the MEMORY CONTEXT area, otherwise '__current__'. Set destination_label to null.\n"
         "- For navigate: if the destination is a room or area, set destination_label to the best matching label from the available navigation labels list. "
         "If the destination is a specific physical object or item type (e.g. 'fire extinguisher', 'forklift', 'first aid kit', 'fire hose', 'chair'), "
         "ALWAYS use navigate intent and set destination_label to the object name as given — even if it is not in the navigation labels list. "
@@ -82,7 +86,7 @@ def route_intent(user_message: str, asset_labels: list[str], last_queried_area: 
                     "properties": {
                         "intent": {
                             "type": "string",
-                            "enum": ["navigate", "visual", "mark_asset", "activity", "conversational", "query_assets", "react_query", "where_am_i", "report_issue", "list_problems"],
+                            "enum": ["navigate", "visual", "mark_asset", "activity", "conversational", "query_assets", "react_query", "where_am_i", "report_issue", "list_problems", "list_locations", "scan_area", "auto_tag", "show_floorplan"],
                         },
                         "destination_label": {
                             "anyOf": [{"type": "string"}, {"type": "null"}],
@@ -197,7 +201,7 @@ def _parse_router_json(text: str) -> dict:
             "reply": "I could not parse the routing response. Please try rephrasing.",
         }
     intent = data.get("intent", "conversational")
-    if intent not in ("navigate", "visual", "conversational", "mark_asset", "activity", "query_assets", "react_query", "where_am_i", "report_issue", "list_problems"):
+    if intent not in ("navigate", "visual", "conversational", "mark_asset", "activity", "query_assets", "react_query", "where_am_i", "report_issue", "list_problems", "list_locations", "scan_area", "auto_tag", "show_floorplan"):
         intent = "conversational"
     return {
         "intent": intent,
@@ -258,16 +262,21 @@ def _scout_detect_objects(image_b64: str, area_context: str | None = None) -> di
     area_hint = f" This image is from a '{area_context}'." if area_context else ""
 
     prompt = (
-        f"Look at this room image carefully.{area_hint} "
-        "IMPORTANT: Only list objects that are CLEARLY VISIBLE and CLOSE to the camera — "
-        "items in the foreground or middle ground of this specific room. "
-        "Do NOT include objects that are far away, blurry, through doorways, "
-        "in adjacent rooms, or barely visible. "
-        "List EVERY piece of furniture and object you can clearly see with their counts. "
-        "Reply ONLY as a comma-separated list in this exact format: "
-        "chair: 2, table: 1, sofa: 1, tv: 1, lamp: 2. "
-        "No other text, no sentences, just the list. "
-        "If you see nothing clearly, reply with: none"
+        f"You are an asset-inventory inspector. Look at this image carefully.{area_hint} "
+        "List the physical assets and equipment you can CLEARLY see, with exact counts.\n"
+        "RULES:\n"
+        "- Only count items CLEARLY VISIBLE and CLOSE to the camera (foreground/middle ground "
+        "of this room). Ignore anything far away, blurry, through a doorway, or in an adjacent room.\n"
+        "- Name each item with its MOST SPECIFIC real-world name, not a vague category. "
+        "Prefer 'fire extinguisher', 'office chair', 'filing cabinet', 'forklift', 'pallet', "
+        "'server rack', 'whiteboard', 'monitor', 'printer', 'water dispenser', 'workbench', "
+        "'microscope', 'fume hood', 'shelving rack' over generic words like 'object', 'equipment', "
+        "'furniture', 'thing', or 'machine'.\n"
+        "- Use the SINGULAR noun as the key (chair, not chairs) and count the instances.\n"
+        "- Do NOT list the room itself, walls, floor, ceiling, windows, or doors.\n"
+        "Reply ONLY as a comma-separated 'item: count' list, e.g.: "
+        "office chair: 4, desk: 2, monitor: 2, fire extinguisher: 1. "
+        "No other text, no sentences. If you see no countable assets, reply with: none"
     )
 
     try:
@@ -299,26 +308,68 @@ def _scout_detect_objects(image_b64: str, area_context: str | None = None) -> di
         return {}
 
 
-def detect_objects_from_image_with_positions(image_b64: str, area_context: str | None = None) -> dict:
-    """Return counts AND bounding boxes in one YOLO pass so the scan flow gets
-    instant highlight data with no extra model call. Falls back to counts-only
-    (empty positions) if the CV path is disabled or fails."""
+def detect_objects_from_image_with_positions(image_b64: str, area_context: str | None = None, mode: str | None = None) -> dict:
+    """Scout-primary hybrid detection.
+
+    Step 1 — Llama-4 Scout names everything in the frame (open vocabulary) with
+             per-item counts. Scout is the source of truth for WHAT is here, so
+             specific items (microscope, centrifuge, fire extinguisher, …) are
+             named properly instead of being squeezed into COCO's 80 classes.
+    Step 2 — local CV finds bounding boxes for EXACTLY the items Scout named —
+             guided detection, which is far more reliable than asking an LLM for
+             coordinates. YOLOv8 covers the COCO classes; Grounding DINO (complex
+             mode) is prompted with the remaining names.
+    Step 3 — merge: Scout's counts + CV's boxes.
+
+    Modes:  fast    → Scout counts only (no boxes / no highlight, fastest)
+            normal  → Scout counts + YOLOv8 boxes
+            complex → Scout counts + YOLOv8 + Grounding DINO boxes
+    An item Scout names but CV can't localise still appears in the list — it just
+    has no highlight box (clean fallback).
+    """
     if not image_b64:
-        return {"counts": {}, "positions": {}}
-    if current_app.config.get("CV_ENABLED", True):
-        try:
-            from app.services import cv_service
-            result = cv_service.detect_objects_with_boxes(image_b64, area_context)
-            if result.get("counts"):
+        return {"counts": {}, "positions": {}, "positions_all": {}}
+    mode = (mode or "normal").strip().lower()
+
+    # ── Step 1: Scout names everything (PRIMARY, open vocabulary) ──────────────
+    counts: dict = {}
+    try:
+        counts = _scout_detect_objects(image_b64, area_context) or {}
+    except Exception as e:
+        current_app.logger.warning(f"[Scout] primary detection failed ({e})")
+
+    # If Scout produced nothing, fall back to local CV (counts + boxes) so a scan
+    # still works without the cloud model.
+    if not counts:
+        if current_app.config.get("CV_ENABLED", True):
+            try:
+                from app.services import cv_service
+                result = cv_service.detect_objects_with_boxes(image_b64, area_context, mode)
                 return {
-                    "counts": result["counts"],
+                    "counts": result.get("counts", {}),
                     "positions": result.get("boxes", {}),
                     "positions_all": result.get("boxes_all", {}),
                 }
+            except Exception as e:
+                current_app.logger.warning(f"[CV] fallback detection failed ({e})")
+        return {"counts": {}, "positions": {}, "positions_all": {}}
+
+    # ── Step 2: local CV finds boxes for exactly what Scout named ──────────────
+    positions: dict = {}
+    positions_all: dict = {}
+    if mode != "fast" and current_app.config.get("CV_ENABLED", True):
+        try:
+            from app.services import cv_service
+            boxes = cv_service.locate_boxes_for_labels(
+                image_b64, list(counts.keys()), use_dino=(mode == "complex")
+            )
+            positions = boxes.get("positions", {})
+            positions_all = boxes.get("positions_all", {})
         except Exception as e:
-            current_app.logger.warning(f"[CV] detect_with_boxes failed ({e}), falling back to counts-only")
-    counts = detect_objects_from_image(image_b64, area_context)
-    return {"counts": counts, "positions": {}, "positions_all": {}}
+            current_app.logger.warning(f"[CV guided] box-finding failed ({e}); counts only")
+
+    # ── Step 3: merge — Scout counts + CV boxes ────────────────────────────────
+    return {"counts": counts, "positions": positions, "positions_all": positions_all}
 
 
 def locate_object_in_image(image_b64: str, object_name: str) -> list | None:

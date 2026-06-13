@@ -102,9 +102,10 @@ def viewer(map_id):
     )
 
 
-@bp.route("/spaces/<int:map_id>/assets", methods=["GET", "POST"])
+@bp.route("/spaces/<int:map_id>/locations", methods=["GET", "POST"])
 @login_required
-def manage_assets(map_id):
+def manage_locations(map_id):
+    """Navigation locations (tagged sweeps) — separate from scanned assets."""
     uid = session["user_id"]
     space = MatterportSpace.query.filter_by(map_id=map_id, user_id=uid).first_or_404()
     if request.method == "POST":
@@ -113,32 +114,40 @@ def manage_assets(map_id):
         desc = (request.form.get("description") or "").strip()
         cat = (request.form.get("category") or "").strip()
         if not label or not sweep:
-            flash("Label name and Sweep UUID are required.", "danger")
+            flash("Location name and Sweep UUID are required.", "danger")
         else:
-            a = Asset(
+            db.session.add(Asset(
                 map_id=map_id,
                 label_name=label,
                 sweep_uuid=sweep,
                 description=desc or None,
                 category=cat or None,
-            )
-            db.session.add(a)
+            ))
             db.session.commit()
-            flash("Asset tag added.", "success")
-        return redirect(url_for("main.manage_assets", map_id=map_id))
-    assets = Asset.query.filter_by(map_id=map_id).all()
-    asset_summaries = (
-        AssetsSummary.query.filter_by(map_id=map_id)
-        .order_by(AssetsSummary.area_name.asc(), AssetsSummary.asset_name.asc())
+            flash("Location added.", "success")
+        return redirect(url_for("main.manage_locations", map_id=map_id))
+
+    assets = (
+        Asset.query.filter_by(map_id=map_id)
+        .order_by(Asset.category.asc(), Asset.label_name.asc())
         .all()
     )
+    return render_template("locations.html", space=space, assets=assets)
+
+
+@bp.route("/spaces/<int:map_id>/assets")
+@login_required
+def manage_assets(map_id):
+    """Scanned asset inventory only — locations live on the Locations page."""
+    uid = session["user_id"]
+    space = MatterportSpace.query.filter_by(map_id=map_id, user_id=uid).first_or_404()
+    asset_summaries = _ordered_summaries(map_id)
     summary_locations = sorted(
         {(row.area_name or "Unspecified Area").strip() for row in asset_summaries if (row.area_name or "Unspecified Area").strip()}
     )
     return render_template(
         "assets.html",
         space=space,
-        assets=assets,
         asset_summaries=asset_summaries,
         summary_locations=summary_locations,
     )
@@ -205,9 +214,9 @@ def delete_asset(map_id, asset_id):
     
     db.session.delete(asset)
     db.session.commit()
-    flash(f"Asset '{asset_name}' deleted successfully.", "success")
-    
-    return redirect(url_for("main.manage_assets", map_id=map_id))
+    flash(f"Location '{asset_name}' deleted successfully.", "success")
+
+    return redirect(url_for("main.manage_locations", map_id=map_id))
 
 
 @bp.route("/spaces/<int:map_id>/assets/<int:asset_id>/edit", methods=["GET", "POST"])
@@ -232,9 +241,9 @@ def edit_asset(map_id, asset_id):
             asset.description = desc or None
             asset.category = cat or None
             db.session.commit()
-            flash(f"Asset '{label}' updated successfully.", "success")
-            return redirect(url_for("main.manage_assets", map_id=map_id))
-    
+            flash(f"Location '{label}' updated successfully.", "success")
+            return redirect(url_for("main.manage_locations", map_id=map_id))
+
     return render_template("edit_asset.html", space=space, asset=asset)
 
 
@@ -246,12 +255,40 @@ def delete_space(map_id):
     space = MatterportSpace.query.filter_by(map_id=map_id, user_id=uid).first_or_404()
     
     space_name = space.map_name
-    
+
     db.session.delete(space)
     db.session.commit()
     flash(f"Space '{space_name}' deleted successfully.", "success")
-    
+
     return redirect(url_for("main.dashboard"))
+
+
+@bp.route("/export")
+@login_required
+def export_hub():
+    """Export center — pick any space and download its locations or assets."""
+    uid = session["user_id"]
+    spaces = (
+        MatterportSpace.query.filter_by(user_id=uid)
+        .order_by(MatterportSpace.map_name.asc())
+        .all()
+    )
+    map_ids = [s.map_id for s in spaces]
+    loc_counts, asset_counts = {}, {}
+    if map_ids:
+        for mid, cnt in (
+            db.session.query(Asset.map_id, db.func.count(Asset.asset_id))
+            .filter(Asset.map_id.in_(map_ids)).group_by(Asset.map_id).all()
+        ):
+            loc_counts[mid] = cnt
+        for mid, total in (
+            db.session.query(AssetsSummary.map_id, db.func.sum(AssetsSummary.count))
+            .filter(AssetsSummary.map_id.in_(map_ids)).group_by(AssetsSummary.map_id).all()
+        ):
+            asset_counts[mid] = int(total or 0)
+    return render_template(
+        "export.html", spaces=spaces, loc_counts=loc_counts, asset_counts=asset_counts
+    )
 
 
 def _ordered_summaries(map_id):

@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}Locations · {{ space.map_name }} · 3DAgent{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <div class="page-title">
+    <h1>📍 Navigation Locations</h1>
+    <p>Tagged sweeps used by the AI for navigation in <strong>{{ space.map_name }}</strong>.</p>
+  </div>
+  <div class="page-header-actions">
+    <a href="{{ url_for('main.viewer', map_id=space.map_id) }}" class="btn secondary">👁️ Open Viewer</a>
+    <a href="{{ url_for('main.manage_assets', map_id=space.map_id) }}" class="btn ghost">📦 Assets</a>
+    <a href="{{ url_for('main.export_locations_csv', map_id=space.map_id) }}" target="_blank" class="btn ghost" title="Download locations as CSV">⬇️ CSV</a>
+    <a href="{{ url_for('main.export_locations_pdf', map_id=space.map_id) }}" target="_blank" class="btn ghost" title="Download locations as PDF">📄 PDF</a>
+    <a href="{{ url_for('main.dashboard') }}" class="btn ghost">← Dashboard</a>
+  </div>
+</div>
+
+<div class="page-main">
+  <div class="card space-lg">
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:var(--spacing-md); margin-bottom:var(--spacing-lg);">
+      <div>
+        <h2 style="margin:0;">📌 Tagged Locations</h2>
+        <p class="text-secondary" style="margin:0.25rem 0 0;">
+          Sweep-linked labels for voice navigation like <em>"go to kitchen"</em>. Tag these in the Viewer's
+          <strong>Location</strong> tool or with <em>"mark this as Kitchen"</em> in chat.
+        </p>
+      </div>
+    </div>
+
+    <!-- Add Location -->
+    <form method="post" class="asset-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>
+        <span>Location Name</span>
+        <input name="label_name" required placeholder="e.g., Kitchen 1, Office 2" type="text">
+      </label>
+      <label>
+        <span>Sweep UUID</span>
+        <input name="sweep_uuid" required placeholder="From the Viewer's current-location readout" type="text">
+      </label>
+      <label>
+        <span>Category</span>
+        <input name="category" placeholder="e.g., Office, Lab" type="text">
+      </label>
+      <label>
+        <span>Description</span>
+        <input name="description" placeholder="Optional notes" type="text">
+      </label>
+      <button type="submit" class="btn primary">✓ Add Location</button>
+    </form>
+
+    {% if assets %}
+      <table class="data-table" style="margin-top: var(--spacing-lg);">
+        <thead>
+          <tr>
+            <th>Location Name</th>
+            <th>Category</th>
+            <th>Sweep UUID</th>
+            <th>Description</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in assets %}
+          <tr>
+            <td><strong>{{ a.label_name }}</strong></td>
+            <td><span class="category-badge">{{ a.category or 'Uncategorized' }}</span></td>
+            <td><code title="{{ a.sweep_uuid }}">{{ a.sweep_uuid[:14] }}…</code></td>
+            <td class="text-secondary">{{ a.description or '—' }}</td>
+            <td>
+              <div class="actions">
+                <a href="{{ url_for('main.edit_asset', map_id=space.map_id, asset_id=a.asset_id) }}"
+                   class="btn small secondary">✏️ Edit</a>
+                <form method="post"
+                      action="{{ url_for('main.delete_asset', map_id=space.map_id, asset_id=a.asset_id) }}"
+                      style="display:inline;"
+                      onsubmit="return confirm('Delete \'{{ a.label_name }}\'?');">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <button type="submit" class="btn small danger">🗑️</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p class="text-secondary" style="margin-top:var(--spacing-md); font-size:0.85rem;">
+        {{ assets|length }} location{{ 's' if assets|length != 1 else '' }} tagged.
+        💡 Tip: use <strong>🤖 Auto-Tag Locations</strong> in the Viewer to tag every sweep automatically.
+      </p>
+    {% else %}
+      <div style="text-align:center; padding:2rem; background:var(--bg-tertiary);
+                  border-radius:var(--radius-md); border:1px dashed var(--border-hover);
+                  margin-top:var(--spacing-lg);">
+        <p style="font-size:2rem; margin:0;">🏷️</p>
+        <p class="text-secondary" style="margin-top:0.75rem;">
+          No locations tagged yet. Add one above, use the Viewer's <strong>Location</strong> tool,
+          or run <strong>Auto-Tag Locations</strong>.
+        </p>
+      </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
