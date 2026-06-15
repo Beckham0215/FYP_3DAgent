@@ -202,20 +202,64 @@ def delete_scanned_asset(map_id, summary_id):
     return redirect(url_for("main.manage_assets", map_id=map_id))
 
 
+@bp.route("/spaces/<int:map_id>/scanned-assets/delete-room", methods=["POST"])
+@login_required
+def delete_scanned_assets_by_room(map_id):
+    """Delete all scanned asset rows for a specific room/location."""
+    uid = session["user_id"]
+    MatterportSpace.query.filter_by(map_id=map_id, user_id=uid).first_or_404()
+
+    area_name = (request.form.get("area_name") or "").strip() or None
+    rows = AssetsSummary.query.filter_by(map_id=map_id, area_name=area_name).all()
+    count = len(rows)
+    for row in rows:
+        db.session.delete(row)
+    db.session.commit()
+    label = area_name or "Unspecified"
+    flash(f"Deleted {count} asset record(s) from '{label}'.", "success")
+    return redirect(url_for("main.manage_assets", map_id=map_id))
+
+
+@bp.route("/spaces/<int:map_id>/scanned-assets/delete-all", methods=["POST"])
+@login_required
+def delete_all_scanned_assets(map_id):
+    """Delete every scanned asset record for this space."""
+    uid = session["user_id"]
+    MatterportSpace.query.filter_by(map_id=map_id, user_id=uid).first_or_404()
+
+    count = AssetsSummary.query.filter_by(map_id=map_id).delete()
+    db.session.commit()
+    flash(f"Deleted all {count} scanned asset record(s) from this space.", "success")
+    return redirect(url_for("main.manage_assets", map_id=map_id))
+
+
 @bp.route("/spaces/<int:map_id>/assets/<int:asset_id>/delete", methods=["POST"])
 @login_required
 def delete_asset(map_id, asset_id):
     """Delete an asset from the management page."""
     uid = session["user_id"]
     space = MatterportSpace.query.filter_by(map_id=map_id, user_id=uid).first_or_404()
-    
+
     asset = Asset.query.filter_by(asset_id=asset_id, map_id=map_id).first_or_404()
     asset_name = asset.label_name
-    
+
     db.session.delete(asset)
     db.session.commit()
     flash(f"Location '{asset_name}' deleted successfully.", "success")
 
+    return redirect(url_for("main.manage_locations", map_id=map_id))
+
+
+@bp.route("/spaces/<int:map_id>/locations/delete-all", methods=["POST"])
+@login_required
+def delete_all_locations(map_id):
+    """Delete every tagged navigation location for this space."""
+    uid = session["user_id"]
+    MatterportSpace.query.filter_by(map_id=map_id, user_id=uid).first_or_404()
+
+    count = Asset.query.filter_by(map_id=map_id).delete()
+    db.session.commit()
+    flash(f"Deleted all {count} location(s) from this space.", "success")
     return redirect(url_for("main.manage_locations", map_id=map_id))
 
 

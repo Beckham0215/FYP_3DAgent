@@ -291,20 +291,36 @@ def vla():
         min_count = react_spec.get("min_count", 1)
         reasoning = react_spec.get("reasoning", f"Looking for rooms with ≥ {min_count} {target_asset}s")
 
-        # Query DB for rooms with enough of the target asset
+        def _area_totals(rows):
+            """Sum counts per area across per-instance rows (each stored with count=1)."""
+            from collections import defaultdict
+            totals = defaultdict(int)
+            first_row = {}
+            for r in rows:
+                area = r.area_name or ""
+                totals[area] += r.count
+                if area not in first_row:
+                    first_row[area] = r
+            return [
+                (first_row[area], totals[area])
+                for area, total in totals.items()
+                if total >= min_count
+            ]
+
+        # Exact match first
         summaries = AssetsSummary.query.filter(
             AssetsSummary.map_id == map_id,
             AssetsSummary.asset_name == target_asset,
         ).all()
-        candidates = [s for s in summaries if s.count >= min_count]
+        candidates = _area_totals(summaries)
 
         if not candidates:
-            # Partial name match fallback
+            # Partial match: "chair" matches "office chair", "arm chair", etc.
             summaries = AssetsSummary.query.filter(
                 AssetsSummary.map_id == map_id,
                 AssetsSummary.asset_name.like(f"%{target_asset}%"),
             ).all()
-            candidates = [s for s in summaries if s.count >= min_count]
+            candidates = _area_totals(summaries)
 
         if not candidates:
             reply = (
@@ -317,13 +333,13 @@ def vla():
                             "candidates": [], "response": reply})
 
         candidate_list = []
-        for summary in candidates:
+        for summary, recorded_count in candidates:
             asset_tag = Asset.query.filter_by(map_id=map_id, label_name=summary.area_name).first()
             candidate_list.append({
                 "label": summary.area_name,
                 "sweep_uuid": asset_tag.sweep_uuid if asset_tag else None,
                 "target_asset": target_asset,
-                "recorded_count": summary.count,
+                "recorded_count": recorded_count,
             })
 
         _log_chat(uid, map_id, message,

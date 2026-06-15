@@ -31,21 +31,22 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   });
   
-  // Restore panel states from localStorage
+  // Restore panel states from localStorage (chat-panel always starts minimized)
   const panels = document.querySelectorAll('.hud-panel, .chat-overlay');
   if (panels.length === 0) return;
-  
+
   panels.forEach(panel => {
     const panelId = panel.id;
-    if (panelId) {
-      const wasMinimized = localStorage.getItem(`panel_${panelId}_minimized`) === 'true';
-      if (wasMinimized) {
-        panel.classList.add('minimized');
-        const toggleBtn = panel.querySelector('.toggle-btn');
-        if (toggleBtn) {
-          toggleBtn.textContent = '+';
-          toggleBtn.title = 'Maximize panel';
-        }
+    if (!panelId) return;
+    // Chat panel defaults to minimized; appendLine() opens it when content arrives
+    if (panelId === 'chat-panel') return;
+    const wasMinimized = localStorage.getItem(`panel_${panelId}_minimized`) === 'true';
+    if (wasMinimized) {
+      panel.classList.add('minimized');
+      const toggleBtn = panel.querySelector('.toggle-btn');
+      if (toggleBtn) {
+        toggleBtn.textContent = '+';
+        toggleBtn.title = 'Maximize panel';
       }
     }
   });

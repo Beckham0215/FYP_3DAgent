@@ -10,6 +10,7 @@ class Config:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     WTF_CSRF_ENABLED = True
     GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+    GROQ_API_KEY_2 = os.environ.get("GROQ_API_KEY_2", "")
     GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
     MATTERPORT_SDK_KEY = os.environ.get("MATTERPORT_SDK_KEY", "")
 

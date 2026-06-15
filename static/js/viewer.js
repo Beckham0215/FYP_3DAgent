@@ -140,6 +140,17 @@
       chatHistory.push({ role: role === "user" ? "user" : "assistant", content: text });
       if (chatHistory.length > 10) chatHistory.shift();
     }
+    // Auto-expand the chat panel when content arrives
+    const chatPanel = document.getElementById("chat-panel");
+    if (chatPanel && chatPanel.classList.contains("minimized")) {
+      chatPanel.classList.remove("minimized");
+      const toggleBtn = chatPanel.querySelector(".toggle-btn");
+      if (toggleBtn) {
+        toggleBtn.textContent = "−";
+        toggleBtn.title = "Minimize panel";
+        toggleBtn.setAttribute("aria-label", "Minimize chat panel");
+      }
+    }
   }
 
   function setStatus(text) {
@@ -1349,9 +1360,9 @@
     }
   }
 
-  // ── Feature 4: ReAct multi-step verification loop ────────────────────────
+  // ── Feature 4: ReAct query — recommend based on database records ─────────
   async function handleReactQuery(data) {
-    appendLine("agent", `🧠 Reasoning: ${data.reasoning}`);
+    appendLine("agent", `🧠 ${data.reasoning}`);
 
     if (!data.candidates || data.candidates.length === 0) {
       appendLine("agent", data.response || "No rooms in the database match the requirement. Scan some rooms first.");
@@ -1359,66 +1370,20 @@
     }
 
     const targetAsset = data.target_asset || "item";
-    appendLine("system", `Found ${data.candidates.length} candidate room(s) in records. Navigating to verify current state…`);
+    const sorted = [...data.candidates].sort((a, b) => b.recorded_count - a.recorded_count);
+    const best = sorted[0];
 
-    const results = [];
-    for (const candidate of data.candidates) {
-      appendLine("system", `🔍 Checking "${candidate.label}" (recorded: ${candidate.recorded_count} ${targetAsset}(s))…`);
-
-      if (!candidate.sweep_uuid) {
-        results.push({ ...candidate, status: "unverified", note: `"${candidate.label}" has no navigation tag — cannot physically verify` });
-        appendLine("system", `  ⚠ No navigation tag for "${candidate.label}". Using recorded data only.`);
-        continue;
-      }
-
-      // Navigate to the room
-      await handleNavigate(candidate.sweep_uuid);
-      await sleep(2500);
-
-      // Capture viewport and verify
-      try {
-        const imageBase64 = await captureViewportBase64();
-        const verifyRes = await fetch("/api/react-verify", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "same-origin",
-          body: JSON.stringify({
-            map_id: mapId,
-            label: candidate.label,
-            target_asset: targetAsset,
-            recorded_count: candidate.recorded_count,
-            image_base64: imageBase64,
-          }),
-        });
-        const vd = await verifyRes.json().catch(() => ({ ok: false }));
-        results.push({ ...candidate, ...vd });
-        appendLine("system", `  → ${vd.note || "checked"}`);
-      } catch (err) {
-        results.push({ ...candidate, status: "error", note: err.message });
-        appendLine("system", `  ⚠ Verification error: ${err.message}`);
-      }
+    if (sorted.length === 1) {
+      appendLine("agent", `✅ "${best.label}" has ${best.recorded_count} ${targetAsset}(s) on record.`);
+    } else {
+      const others = sorted.slice(1).map(r => `${r.label} (${r.recorded_count})`).join(", ");
+      appendLine("agent", `✅ Best match: "${best.label}" with ${best.recorded_count} ${targetAsset}(s) on record.\nOther options: ${others}`);
     }
 
-    // Final recommendation
-    const okRooms       = results.filter(r => r.status === "ok");
-    const degradedRooms = results.filter(r => r.status === "degraded");
-    const unverified    = results.filter(r => r.status === "unverified");
-
-    let report = `📊 Assessment — ${data.reasoning}\n`;
-    if (okRooms.length) {
-      report += `✅ Best option(s): ${okRooms.map(r => `${r.label} (${r.verified_count ?? r.recorded_count} ${targetAsset}s confirmed)`).join("; ")}\n`;
+    if (best.sweep_uuid) {
+      appendLine("system", `Navigating to "${best.label}"…`);
+      await handleNavigate(best.sweep_uuid);
     }
-    if (degradedRooms.length) {
-      report += `⚠️  Possible (fewer than expected): ${degradedRooms.map(r => r.note).join("; ")}\n`;
-    }
-    if (unverified.length) {
-      report += `📋 Unverified (from records only): ${unverified.map(r => `${r.label} (${r.recorded_count} ${targetAsset}s on record)`).join("; ")}\n`;
-    }
-    if (!okRooms.length && !degradedRooms.length && !unverified.length) {
-      report += "❌ No rooms currently meet the requirements.\n";
-    }
-
-    appendLine("agent", report.trim());
   }
 
   // ── Scan mode picker helpers ──────────────────────────────────────────────
@@ -1438,14 +1403,33 @@
     try {
       const res = await fetch(`/api/spaces/${mapId}/assets`, { credentials: "same-origin" });
       const data = await res.json().catch(() => ({ assets: [] }));
+      const assets = data.assets || [];
+
+      // Unique categories from auto-tagged assets
       const categories = [...new Set(
-        (data.assets || []).map(a => a.category).filter(c => c && c.trim())
+        assets.map(a => a.category).filter(c => c && c.trim())
       )].sort();
+
+      // Label names from manually added or uncategorized assets (not already a category)
+      const catSet = new Set(categories.map(c => c.toLowerCase()));
+      const labelNames = [...new Set(
+        assets
+          .filter(a => !a.category || !a.category.trim())
+          .map(a => a.label_name)
+          .filter(n => n && n.trim() && !catSet.has(n.trim().toLowerCase()))
+      )].sort();
+
       scanCategorySelect.innerHTML = '<option value="">Select area to scan…</option>';
       categories.forEach(cat => {
         const opt = document.createElement("option");
         opt.value = cat;
         opt.textContent = cat;
+        scanCategorySelect.appendChild(opt);
+      });
+      labelNames.forEach(name => {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
         scanCategorySelect.appendChild(opt);
       });
     } catch (err) {
@@ -1752,12 +1736,19 @@
   async function scanWholeArea(category) {
     const res = await fetch(`/api/spaces/${mapId}/assets`, { credentials: "same-origin" });
     const data = await res.json().catch(() => ({ assets: [] }));
-    const sweeps = (data.assets || []).filter(
+    let sweeps = (data.assets || []).filter(
       a => a.category && a.category.toLowerCase() === category.toLowerCase() && a.sweep_uuid
     );
 
+    // Fallback: match by label_name for manually added / uncategorized areas
     if (!sweeps.length) {
-      appendLine("system", `No tagged sweeps found for "${category}". Run Auto-Tag first.`);
+      sweeps = (data.assets || []).filter(
+        a => a.label_name && a.label_name.toLowerCase() === category.toLowerCase() && a.sweep_uuid
+      );
+    }
+
+    if (!sweeps.length) {
+      appendLine("system", `No tagged sweeps found for "${category}". Run Auto-Tag first or add a location tag.`);
       return;
     }
 

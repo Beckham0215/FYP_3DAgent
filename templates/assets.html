@@ -12,6 +12,15 @@
     <a href="{{ url_for('main.manage_locations', map_id=space.map_id) }}" class="btn ghost">📍 Locations</a>
     <a href="{{ url_for('main.export_csv', map_id=space.map_id) }}" target="_blank" class="btn ghost" title="Download assets as CSV">⬇️ CSV</a>
     <a href="{{ url_for('main.export_pdf', map_id=space.map_id) }}" target="_blank" class="btn ghost" title="Download assets as PDF">📄 PDF</a>
+    {% if asset_summaries %}
+    <form method="post"
+          action="{{ url_for('main.delete_all_scanned_assets', map_id=space.map_id) }}"
+          style="display:inline;"
+          onsubmit="return confirm('⚠️ Delete ALL scanned assets in this space?\n\nThis cannot be undone.');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="btn danger" title="Delete every scanned asset in this space">🗑️ Delete All</button>
+    </form>
+    {% endif %}
     <a href="{{ url_for('main.dashboard') }}" class="btn ghost">← Dashboard</a>
   </div>
 </div>
@@ -41,6 +50,20 @@
     </div>
 
     {% if asset_summaries %}
+      <!-- Per-room bulk delete bar (hidden until a room is selected in the filter) -->
+      <div id="room-delete-bar" style="display:none; margin-bottom:var(--spacing-md);
+           padding:0.6rem 1rem; background:var(--bg-tertiary); border:1px solid var(--border-hover);
+           border-radius:var(--radius-md); align-items:center; gap:0.75rem;">
+        <span id="room-delete-label" style="font-weight:600; flex:1;"></span>
+        <form id="room-delete-form" method="post"
+              action="{{ url_for('main.delete_scanned_assets_by_room', map_id=space.map_id) }}"
+              onsubmit="return confirmDeleteRoom();">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="area_name" id="room-delete-area-input" value="">
+          <button type="submit" class="btn small danger">🗑️ Delete This Room's Assets</button>
+        </form>
+      </div>
+
       <table class="data-table">
         <thead>
           <tr>
@@ -107,9 +130,13 @@
 {% if asset_summaries %}
 <script>
 (function () {
-  var filter   = document.getElementById("summary-location-filter");
-  var rows     = Array.from(document.querySelectorAll(".summary-row"));
-  var emptyTip = document.getElementById("summary-empty-tip");
+  var filter      = document.getElementById("summary-location-filter");
+  var rows        = Array.from(document.querySelectorAll(".summary-row"));
+  var emptyTip    = document.getElementById("summary-empty-tip");
+  var deleteBar   = document.getElementById("room-delete-bar");
+  var deleteLabel = document.getElementById("room-delete-label");
+  var deleteInput = document.getElementById("room-delete-area-input");
+
   function apply() {
     var sel = (filter && filter.value) || "";
     var visible = 0;
@@ -119,9 +146,27 @@
       if (show) visible++;
     });
     if (emptyTip) emptyTip.style.display = (sel && visible === 0) ? "block" : "none";
+
+    // Show/hide the per-room bulk-delete bar
+    if (deleteBar) {
+      if (sel) {
+        deleteBar.style.display = "flex";
+        if (deleteLabel) deleteLabel.textContent = "Room: " + sel + " (" + visible + " record" + (visible !== 1 ? "s" : "") + ")";
+        if (deleteInput) deleteInput.value = sel;
+      } else {
+        deleteBar.style.display = "none";
+      }
+    }
   }
+
   if (filter) { filter.addEventListener("change", apply); apply(); }
 })();
+
+function confirmDeleteRoom() {
+  var label = document.getElementById("room-delete-label");
+  var name  = document.getElementById("room-delete-area-input").value || "this room";
+  return confirm("⚠️ Delete ALL scanned assets in \"" + name + "\"?\n\nThis cannot be undone.");
+}
 </script>
 {% endif %}
 

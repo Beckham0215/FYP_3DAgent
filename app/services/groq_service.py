@@ -6,11 +6,24 @@ from groq import Groq, APIError as GroqAPIError
 from flask import current_app
 
 
-def _client():
-    key = current_app.config.get("GROQ_API_KEY") or ""
-    if not key:
+def _groq_create(**kwargs):
+    """Call chat.completions.create with automatic fallback to GROQ_API_KEY_2 on rate-limit."""
+    from groq import RateLimitError
+    keys = [
+        current_app.config.get("GROQ_API_KEY") or "",
+        current_app.config.get("GROQ_API_KEY_2") or "",
+    ]
+    keys = [k for k in keys if k]
+    if not keys:
         raise RuntimeError("GROQ_API_KEY is not set.")
-    return Groq(api_key=key)
+    last_err = None
+    for key in keys:
+        try:
+            return Groq(api_key=key).chat.completions.create(**kwargs)
+        except RateLimitError as e:
+            last_err = e
+            continue
+    raise last_err
 
 
 def route_intent(user_message: str, asset_labels: list[str], last_queried_area: str | None = None, history: list | None = None) -> dict:
@@ -108,7 +121,7 @@ def route_intent(user_message: str, asset_labels: list[str], last_queried_area: 
     # Prefer tool-calling for structured output. If the Groq SDK/model
     # returns plain text instead, we fall back to JSON parsing.
     try:
-        completion = _client().chat.completions.create(
+        completion = _groq_create(
             model=model,
             messages=[
                 {"role": "system", "content": system},
@@ -147,7 +160,7 @@ def route_intent(user_message: str, asset_labels: list[str], last_queried_area: 
     except Exception:
         # Tool-calling format issue (AttributeError, KeyError, JSONDecodeError).
         # Retry once without tools so the model returns plain JSON text.
-        completion = _client().chat.completions.create(
+        completion = _groq_create(
             model=model,
             messages=[
                 {"role": "system", "content": system},
@@ -176,7 +189,7 @@ def chat_reply(user_message: str, context: str | None = None, history: list | No
             if content and role in ("user", "assistant"):
                 messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": user_message})
-    completion = _client().chat.completions.create(
+    completion = _groq_create(
         model=model,
         messages=messages,
         temperature=0.2,
@@ -280,7 +293,7 @@ def _scout_detect_objects(image_b64: str, area_context: str | None = None) -> di
     )
 
     try:
-        completion = _client().chat.completions.create(
+        completion = _groq_create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=[
                 {
@@ -407,7 +420,7 @@ def _scout_locate_object(image_b64: str, object_name: str) -> list | None:
     )
 
     try:
-        completion = _client().chat.completions.create(
+        completion = _groq_create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=[
                 {
@@ -513,7 +526,7 @@ def _scout_locate_all_objects(image_b64: str, object_names: list) -> dict:
     )
 
     try:
-        completion = _client().chat.completions.create(
+        completion = _groq_create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=[{
                 "role": "user",
@@ -584,7 +597,7 @@ def _scout_locate_all_instances(image_b64: str, object_name: str, expected_count
     )
 
     try:
-        completion = _client().chat.completions.create(
+        completion = _groq_create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=[{
                 "role": "user",
@@ -692,7 +705,7 @@ def suggest_location_name_from_image(
         "Reply with ONLY the area name (1-3 words). No explanation, no punctuation."
     )
     try:
-        completion = _client().chat.completions.create(
+        completion = _groq_create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=[{
                 "role": "user",
@@ -736,7 +749,7 @@ def suggest_location_name_from_objects(detected_objects: dict, building_context:
     )
     model = current_app.config.get("GROQ_MODEL", "llama-3.3-70b-versatile")
     try:
-        completion = _client().chat.completions.create(
+        completion = _groq_create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
@@ -765,7 +778,7 @@ def parse_report_request(user_message: str) -> dict:
     )
     model = current_app.config.get("GROQ_MODEL", "llama-3.3-70b-versatile")
     try:
-        completion = _client().chat.completions.create(
+        completion = _groq_create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
@@ -798,7 +811,7 @@ def parse_react_request(user_message: str) -> dict:
     )
     model = current_app.config.get("GROQ_MODEL", "llama-3.3-70b-versatile")
     try:
-        completion = _client().chat.completions.create(
+        completion = _groq_create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,

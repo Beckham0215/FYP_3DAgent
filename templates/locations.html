@@ -12,6 +12,15 @@
     <a href="{{ url_for('main.manage_assets', map_id=space.map_id) }}" class="btn ghost">📦 Assets</a>
     <a href="{{ url_for('main.export_locations_csv', map_id=space.map_id) }}" target="_blank" class="btn ghost" title="Download locations as CSV">⬇️ CSV</a>
     <a href="{{ url_for('main.export_locations_pdf', map_id=space.map_id) }}" target="_blank" class="btn ghost" title="Download locations as PDF">📄 PDF</a>
+    {% if assets %}
+    <form method="post"
+          action="{{ url_for('main.delete_all_locations', map_id=space.map_id) }}"
+          style="display:inline;"
+          onsubmit="return confirm('⚠️ Delete ALL {{ assets|length }} location(s) in this space?\n\nThis removes all navigation tags. This cannot be undone.');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="btn danger" title="Delete every tagged location in this space">🗑️ Delete All</button>
+    </form>
+    {% endif %}
     <a href="{{ url_for('main.dashboard') }}" class="btn ghost">← Dashboard</a>
   </div>
 </div>

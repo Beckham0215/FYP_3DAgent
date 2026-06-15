@@ -249,6 +249,47 @@ a:hover {
 
 .top-bar {
   display: none;
+  padding: 0.6rem var(--spacing-md);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  align-items: center;
+  gap: var(--spacing-md);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  flex-shrink: 0;
+}
+
+.top-bar-hamburger {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 1.1rem;
+  padding: 0.35rem 0.55rem;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s;
+}
+.top-bar-hamburger:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+
+.top-bar-brand {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.35);
+  z-index: 998;
 }
 
 main {
@@ -274,6 +315,7 @@ main {
   flex-direction: column;
   gap: var(--spacing-xs);
   flex: 1;
+  min-width: 0;
 }
 
 .page-title h1 {
@@ -292,8 +334,9 @@ main {
 
 .page-header-actions {
   display: flex;
-  gap: var(--spacing-md);
+  gap: var(--spacing-sm);
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .page-main {
@@ -1486,11 +1529,11 @@ label {
 .scan-review-item {
   display: flex;
   align-items: stretch;
-  gap: 6px;
+  gap: 4px;
   color: var(--text-secondary);
   background: var(--bg-tertiary);
   border: 1px solid var(--border-light);
-  padding: 6px;
+  padding: 4px 5px;
   border-radius: 6px;
 }
 
@@ -1633,13 +1676,13 @@ label {
 }
 
 .scan-item-count-input {
-  width: 60px;
-  padding: 0.4rem 0.5rem;
+  width: 44px;
+  padding: 0.2rem 0.3rem;
   border: 1px solid var(--border);
   background: var(--surface-1);
   color: var(--text-primary);
   border-radius: var(--radius-sm);
-  font-size: 0.9rem;
+  font-size: 0.8rem;
   text-align: center;
 }
 
@@ -1652,13 +1695,13 @@ label {
 .scan-item-btn-minus,
 .scan-item-btn-plus,
 .scan-item-btn-delete {
-  padding: 0.4rem 0.6rem;
+  padding: 0.2rem 0.45rem;
   border: 1px solid var(--border);
   background: var(--surface-1);
   color: var(--text-primary);
   border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 0.85rem;
+  font-size: 0.78rem;
   font-weight: 600;
   transition: all 0.15s ease;
 }
@@ -2033,7 +2076,24 @@ label {
    RESPONSIVE
    ============================================ */
 
+/* Medium laptops: stack page-header at 1100px (sidebar eats 260px, leaving ~840px content) */
+@media (max-width: 1100px) {
+  .page-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .page-header-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+}
+
 @media (max-width: 768px) {
+  .top-bar {
+    display: flex;
+  }
+
   .sidebar {
     width: 0;
     position: fixed;
@@ -2048,6 +2108,10 @@ label {
   .sidebar.open {
     width: 260px;
     transform: translateX(0);
+  }
+
+  .sidebar-overlay.open {
+    display: block;
   }
 
   body {
@@ -3661,27 +3725,27 @@ label {
 .scan-results-panel {
   top: 16px;
   left: 200px;
-  width: 340px;
-  max-width: 340px;
+  width: 260px;
+  max-width: 260px;
   max-height: calc(100vh - 32px);
   flex-direction: column;
-  padding: 10px 12px 12px;
+  padding: 8px 10px 10px;
 }
 .scan-results-panel .panel-header {
-  margin-bottom: 8px;
-  padding-bottom: 8px;
+  margin-bottom: 6px;
+  padding-bottom: 6px;
   border-bottom: 1px solid var(--border);
   cursor: grab;
 }
-.scan-results-panel .panel-header strong { font-size: 0.92rem; color: var(--text-primary); }
+.scan-results-panel .panel-header strong { font-size: 0.85rem; color: var(--text-primary); }
 .scan-results-panel .panel-body {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   overflow-y: auto;
   min-height: 0;
 }
-.scan-results-panel .scan-review-list { max-height: 42vh; }
+.scan-results-panel .scan-review-list { max-height: 28vh; }
 
 /* Plain close (✕) button for panels — distinct from the minimize toggle */
 .panel-close-btn {
@@ -3738,8 +3802,11 @@ label {
 }
 #autotag-canvas {
   display: block;
-  width: 100%;
+  width: auto;          /* let aspect-ratio drive size */
+  max-width: 100%;      /* never overflow modal */
   height: auto;
+  max-height: calc(84vh - 290px); /* reserve room for header/toolbar/instructions/actions */
+  margin: 0 auto;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--bg-primary);
@@ -3749,6 +3816,7 @@ label {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  flex-shrink: 0;   /* never let this be clipped by modal overflow */
 }
 .autotag-actions .btn { flex: 1; justify-content: center; }
 
@@ -3756,8 +3824,11 @@ label {
 .autotag-results-canvas-wrap { position: relative; }
 #autotag-results-canvas {
   display: block;
-  width: 100%;
+  width: auto;
+  max-width: 100%;
   height: auto;
+  max-height: calc(84vh - 320px); /* reserve room for header/instructions/results-list/actions */
+  margin: 0 auto;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--bg-primary);

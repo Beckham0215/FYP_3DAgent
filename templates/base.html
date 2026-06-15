@@ -10,7 +10,19 @@
 </head>
 <body class="{% block body_class %}{% endblock %}">
   {% if session.get('user_id') %}
-    <aside class="sidebar">
+    <!-- Mobile overlay (closes sidebar when tapping outside) -->
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+    <!-- Mobile top bar with hamburger -->
+    <div class="top-bar" id="top-bar">
+      <button class="top-bar-hamburger" id="hamburger-btn" aria-label="Open navigation">☰</button>
+      <a href="{{ url_for('main.dashboard') }}" class="top-bar-brand">
+        <img src="{{ url_for('static', filename='images/logo2.png') }}" alt="Logo" style="width:22px;height:22px;object-fit:contain;">
+        3DAgent
+      </a>
+    </div>
+
+    <aside class="sidebar" id="sidebar">
       <div class="sidebar-header">
         <a href="{{ url_for('main.dashboard') }}" class="sidebar-brand" style="display: flex; align-items: center; gap: 8px;">
           <img src="{{ url_for('static', filename='images/logo2.png') }}"
@@ -151,5 +163,28 @@
 
     {% block content %}{% endblock %}
   </main>
+
+  {% if session.get('user_id') %}
+  <script>
+  (function() {
+    var sidebar  = document.getElementById('sidebar');
+    var overlay  = document.getElementById('sidebar-overlay');
+    var hamburger = document.getElementById('hamburger-btn');
+    if (!sidebar || !hamburger) return;
+    function open() {
+      sidebar.classList.add('open');
+      if (overlay) overlay.classList.add('open');
+    }
+    function close() {
+      sidebar.classList.remove('open');
+      if (overlay) overlay.classList.remove('open');
+    }
+    hamburger.addEventListener('click', function() {
+      sidebar.classList.contains('open') ? close() : open();
+    });
+    if (overlay) overlay.addEventListener('click', close);
+  })();
+  </script>
+  {% endif %}
 </body>
 </html>
