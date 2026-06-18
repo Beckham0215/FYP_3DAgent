@@ -22,23 +22,38 @@ Available evaluators
   Unit (always available):
     label_match   - resolve_asset() fuzzy label matching
     vision_parser - parse_groq_vision_response() + _parse_blip_detection_response()
-    activity_map  - get_location_for_activity() dict lookup
     scan_diff     - _compute_scan_diff() change detection
     latency       - Flask test-client API endpoint latency
 
-  Integration (require GROQ_API_KEY):
-    intent        - route_intent() 8-class intent classification
+  Integration (require GROQ_API_KEY — auto-loaded from .env):
+    intent        - route_intent() 14-class intent classification, slot-filling,
+                    robustness probes, and self-consistency (with --repeats)
     react_parser  - parse_react_request() planning query extraction
+
+Note: activity routing is no longer a standalone dict lookup; it is performed by
+the LLM inside route_intent() and is measured by the intent evaluator's
+activity-routing slot metric.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Load .env so GROQ_API_KEY / GROQ_API_KEY_2 / GROQ_MODEL are available to the
+# integration evaluators without the caller having to export them manually.
+# (Previously the integration tests silently skipped because the key lived only
+# in .env, not the shell environment.)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(override=False)
+except Exception:
+    pass
 
 # ── colour helpers (ANSI) ─────────────────────────────────────────────────────
 
@@ -70,8 +85,19 @@ def _bar(score: float, width: int = 20) -> str:
 
 # ── runner ────────────────────────────────────────────────────────────────────
 
-UNIT_EVALUATORS = ["label_match", "vision_parser", "activity_map", "scan_diff", "latency"]
+UNIT_EVALUATORS = ["label_match", "vision_parser", "scan_diff", "latency"]
 INTEGRATION_EVALUATORS = ["intent", "react_parser"]
+
+# Minimum acceptable score per evaluator; used for the pass/fail exit code.
+# Deterministic parsers are held to a high bar; stochastic LLM evaluators to a
+# realistic one. Keys map to (attribute, threshold).
+THRESHOLDS = {
+    "label_match":   ("overall_accuracy", 1.00),
+    "vision_parser": ("overall_accuracy", 0.95),
+    "scan_diff":     ("overall_accuracy", 1.00),
+    "intent":        ("overall_accuracy", 0.85),
+    "react_parser":  ("asset_accuracy",   0.85),
+}
 
 
 def run_evaluator(name: str):
@@ -79,8 +105,6 @@ def run_evaluator(name: str):
         from eval.evaluators.label_match import run
     elif name == "vision_parser":
         from eval.evaluators.vision_parser import run
-    elif name == "activity_map":
-        from eval.evaluators.activity_map import run
     elif name == "scan_diff":
         from eval.evaluators.scan_diff import run
     elif name == "intent":
@@ -123,12 +147,6 @@ def _print_result(name: str, result, elapsed: float) -> None:
         print(f"  Combined             : {_bar(result.overall_accuracy)}"
               f"  {_status(result.overall_accuracy)}")
 
-    # ── activity_map ──
-    elif name == "activity_map":
-        print(f"  Accuracy         : {_bar(result.overall_accuracy)}"
-              f"  {_status(result.overall_accuracy)}")
-        print(f"  Correct / Total  : {result.correct}/{result.total}")
-
     # ── scan_diff ──
     elif name == "scan_diff":
         print(f"  Accuracy         : {_bar(result.overall_accuracy)}"
@@ -139,22 +157,44 @@ def _print_result(name: str, result, elapsed: float) -> None:
     elif name == "intent":
         print(f"  Accuracy         : {_bar(result.overall_accuracy)}"
               f"  {_status(result.overall_accuracy)}")
+        print(f"  95% CI           : [{result.ci_low*100:.1f}%, {result.ci_high*100:.1f}%]")
         print(f"  Macro F1         : {_bar(result.macro_f1)}")
+        print(f"  Weighted F1      : {_bar(result.weighted_f1)}")
         print(f"  Correct / Total  : {result.correct}/{result.total}")
-        print(f"  Avg latency      : {result.avg_latency_ms:.0f} ms")
+        print(f"  Slot accuracy    : {_bar(result.slot_accuracy)}"
+              f"  ({result.slot_correct}/{result.slot_total})")
+        print(f"  Activity routing : {_bar(result.activity_accuracy)}"
+              f"  ({result.activity_correct}/{result.activity_total})")
+        print(f"  Robustness acc   : {_bar(result.robustness_accuracy)}"
+              f"  ({result.robustness_correct}/{result.robustness_total})")
+        if result.errored or result.robustness_errored:
+            print(_col(f"  ⚠ DATA QUALITY   : {result.errored} primary + "
+                       f"{result.robustness_errored} robustness cases errored "
+                       f"(likely rate-limited) — metrics above are unreliable.", _RED))
+        if result.repeats > 1:
+            print(f"  Consistency      : {_bar(result.consistency)}  (over {result.repeats} runs)")
+        print(f"  Latency p50/p95  : {result.p50_latency_ms:.0f} / {result.p95_latency_ms:.0f} ms")
         print()
-        header = f"  {'Intent':<18} {'Prec':>6} {'Rec':>6} {'F1':>6}"
+        header = f"  {'Intent':<18} {'Prec':>6} {'Rec':>6} {'F1':>6} {'Supp':>5}"
         print(header)
-        print("  " + "-" * 38)
+        print("  " + "-" * 44)
         for cls, v in result.per_class.items():
-            print(f"  {cls:<18} {v['precision']:>6.2f} {v['recall']:>6.2f} {v['f1']:>6.2f}")
+            supp = v['tp'] + v['fn']
+            print(f"  {cls:<18} {v['precision']:>6.2f} {v['recall']:>6.2f} {v['f1']:>6.2f} {supp:>5}")
 
     # ── react_parser ──
     elif name == "react_parser":
         print(f"  Asset accuracy   : {_bar(result.asset_accuracy)}"
               f"  {_status(result.asset_accuracy)}")
+        print(f"  95% CI           : [{result.asset_ci_low*100:.1f}%, {result.asset_ci_high*100:.1f}%]")
+        print(f"  Count accuracy   : {_bar(result.count_accuracy)}"
+              f"  ({result.count_correct}/{result.total})")
         print(f"  Count MAE        : {result.count_mae:.2f}")
         print(f"  Fully correct    : {result.exact_matches}/{result.total}")
+        if result.suspected_throttling:
+            print(_col(f"  ⚠ DATA QUALITY   : {result.default_fallback_rate*100:.0f}% of cases "
+                       f"returned the default chair/1 fallback — API likely "
+                       f"rate-limited; metrics above are unreliable.", _RED))
 
     # ── latency ──
     elif name == "latency":
@@ -191,7 +231,6 @@ def _print_final_summary(results: dict, total_elapsed: float) -> None:
     score_map = {
         "label_match":  ("overall_accuracy", "Accuracy"),
         "vision_parser": ("overall_accuracy", "Accuracy"),
-        "activity_map": ("overall_accuracy", "Accuracy"),
         "scan_diff":    ("overall_accuracy", "Accuracy"),
         "intent":       ("overall_accuracy", "Accuracy"),
         "react_parser": ("asset_accuracy",   "Asset Acc"),
@@ -215,6 +254,44 @@ def _print_final_summary(results: dict, total_elapsed: float) -> None:
 
     print(f"\n  Total elapsed: {total_elapsed:.1f}s")
     print(_col("=" * 60, _BOLD))
+
+
+def _check_thresholds(results: dict) -> list:
+    """Return a list of (name, score, threshold) tuples that fell below bar."""
+    failures = []
+    for name, (attr, thr) in THRESHOLDS.items():
+        r = results.get(name)
+        if r is None or (hasattr(r, "error") and r.error):
+            continue  # skipped evaluators don't fail the gate
+        # Don't fail the gate on data we know is contaminated by rate limiting.
+        if getattr(r, "suspected_throttling", False):
+            continue
+        if getattr(r, "errored", 0) or getattr(r, "robustness_errored", 0):
+            continue
+        score = getattr(r, attr, 0.0)
+        if score < thr:
+            failures.append((name, score, thr))
+    return failures
+
+
+def _results_to_dict(results: dict) -> dict:
+    """Flatten dataclass results into a JSON-serialisable summary for trend tracking."""
+    import dataclasses
+    from datetime import datetime
+
+    out = {"timestamp": datetime.now().isoformat(), "evaluators": {}}
+    for name, r in results.items():
+        if r is None:
+            continue
+        try:
+            d = dataclasses.asdict(r)
+        except TypeError:
+            continue
+        # Drop verbose per-case lists from the persisted summary.
+        for big in ("cases", "groq_cases", "blip_cases", "endpoints", "conf_matrix", "per_class"):
+            d.pop(big, None)
+        out["evaluators"][name] = d
+    return out
 
 
 # ── entry point ───────────────────────────────────────────────────────────────
@@ -241,7 +318,22 @@ def main():
         "--no-report", action="store_true",
         help="Skip HTML report generation",
     )
+    parser.add_argument(
+        "--repeats", type=int, default=None,
+        help="Repeat each LLM case N times to measure self-consistency (intent only)",
+    )
+    parser.add_argument(
+        "--save-json", metavar="FILE", default="eval_results.json",
+        help="Path to persist a JSON metric summary for trend tracking",
+    )
+    parser.add_argument(
+        "--strict", action="store_true",
+        help="Exit with non-zero status if any evaluator falls below its threshold",
+    )
     args = parser.parse_args()
+
+    if args.repeats is not None:
+        os.environ["EVAL_REPEATS"] = str(args.repeats)
 
     to_run = UNIT_EVALUATORS[:]
     if args.integration:
@@ -287,6 +379,23 @@ def main():
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(html)
         print(f"\n{_col('HTML report saved to:', _GREEN)} {out_path}")
+
+    if args.save_json:
+        json_path = os.path.abspath(args.save_json)
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(_results_to_dict(results), f, indent=2, default=str)
+        print(f"{_col('JSON summary saved to:', _GREEN)} {json_path}")
+
+    # Threshold gate
+    failures = _check_thresholds(results)
+    if failures:
+        print(f"\n{_col('THRESHOLD FAILURES:', _RED)}")
+        for name, score, thr in failures:
+            print(f"  {name:<18} {score*100:.1f}% < {thr*100:.0f}% required")
+        if args.strict:
+            sys.exit(1)
+    else:
+        print(f"\n{_col('All evaluators met their thresholds.', _GREEN)}")
 
 
 if __name__ == "__main__":

@@ -37,7 +37,6 @@ def _summary_section(results: Dict[str, Any]) -> str:
     metric_map = {
         "label_match":   ("Label Resolution",         "overall_accuracy", "Accuracy"),
         "vision_parser":  ("Vision Response Parsers",  "overall_accuracy", "Accuracy"),
-        "activity_map":  ("Activity Mapping",         "overall_accuracy", "Accuracy"),
         "scan_diff":     ("Scan Change Detection",    "overall_accuracy", "Accuracy"),
         "intent":        ("Intent Classification",    "overall_accuracy", "Accuracy"),
         "react_parser":  ("ReAct Request Parsing",    "asset_accuracy",   "Asset Accuracy"),
@@ -200,42 +199,6 @@ def _vision_parser_section(r: Any) -> str:
 </section>"""
 
 
-def _activity_map_section(r: Any) -> str:
-    if r.error:
-        return f'<section id="activity_map"><h2>Activity Mapping</h2><p class="na">{_e(r.error)}</p></section>'
-
-    case_rows = "".join(
-        f'<tr class="{_row_class(c["pass"])}">'
-        f'<td>{_e(c["activity"])}</td>'
-        f'<td>{_e(c["expected"])}</td>'
-        f'<td>{_e(c["predicted"])}</td>'
-        f'<td>{"✓" if c["pass"] else "✗"}</td></tr>'
-        for c in r.cases
-    )
-
-    return f"""
-<section id="activity_map">
-  <h2>Activity Mapping <span class="sub">get_location_for_activity()</span></h2>
-  <div class="metric-row">
-    <div class="metric-card">
-      <div class="metric-val">{_pct(r.overall_accuracy)}</div>
-      <div class="metric-lbl">Accuracy</div>
-    </div>
-    <div class="metric-card">
-      <div class="metric-val">{r.correct}/{r.total}</div>
-      <div class="metric-lbl">Correct / Total</div>
-    </div>
-  </div>
-  <h3>Test Cases <button class="toggle" onclick="toggleTable('am-cases')">show/hide</button></h3>
-  <div id="am-cases" style="display:none">
-  <table>
-    <thead><tr><th>Activity Input</th><th>Expected Location</th><th>Predicted</th><th></th></tr></thead>
-    <tbody>{case_rows}</tbody>
-  </table>
-  </div>
-</section>"""
-
-
 def _scan_diff_section(r: Any) -> str:
     if r.error:
         return f'<section id="scan_diff"><h2>Scan Change Detection</h2><p class="na">{_e(r.error)}</p></section>'
@@ -321,23 +284,39 @@ def _intent_section(r: Any) -> str:
 
     return f"""
 <section id="intent">
-  <h2>Intent Classification <span class="sub">route_intent() — Groq API</span></h2>
+  <h2>Intent Classification <span class="sub">route_intent() — Groq API, 14 classes</span></h2>
   <div class="metric-row">
     <div class="metric-card">
       <div class="metric-val">{_pct(r.overall_accuracy)}</div>
-      <div class="metric-lbl">Accuracy</div>
+      <div class="metric-lbl">Accuracy<br><span style="font-size:.7rem">95% CI [{_pct(r.ci_low)}, {_pct(r.ci_high)}]</span></div>
     </div>
     <div class="metric-card">
       <div class="metric-val">{_pct(r.macro_f1)}</div>
       <div class="metric-lbl">Macro F1</div>
     </div>
     <div class="metric-card">
-      <div class="metric-val">{r.correct}/{r.total}</div>
-      <div class="metric-lbl">Correct / Total</div>
+      <div class="metric-val">{_pct(r.weighted_f1)}</div>
+      <div class="metric-lbl">Weighted F1</div>
     </div>
     <div class="metric-card">
-      <div class="metric-val">{r.avg_latency_ms:.0f} ms</div>
-      <div class="metric-lbl">Avg Latency</div>
+      <div class="metric-val">{_pct(r.slot_accuracy)}</div>
+      <div class="metric-lbl">Slot Fill ({r.slot_correct}/{r.slot_total})</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-val">{_pct(r.activity_accuracy)}</div>
+      <div class="metric-lbl">Activity Routing</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-val">{_pct(r.robustness_accuracy)}</div>
+      <div class="metric-lbl">Robustness ({r.robustness_correct}/{r.robustness_total})</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-val">{_pct(r.consistency)}</div>
+      <div class="metric-lbl">Consistency ({r.repeats} runs)</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-val">{r.p50_latency_ms:.0f} ms</div>
+      <div class="metric-lbl">Latency p50 (p95 {r.p95_latency_ms:.0f})</div>
     </div>
   </div>
 
@@ -385,7 +364,11 @@ def _react_parser_section(r: Any) -> str:
   <div class="metric-row">
     <div class="metric-card">
       <div class="metric-val">{_pct(r.asset_accuracy)}</div>
-      <div class="metric-lbl">Asset Accuracy</div>
+      <div class="metric-lbl">Asset Accuracy<br><span style="font-size:.7rem">95% CI [{_pct(r.asset_ci_low)}, {_pct(r.asset_ci_high)}]</span></div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-val">{_pct(r.count_accuracy)}</div>
+      <div class="metric-lbl">Count Accuracy</div>
     </div>
     <div class="metric-card">
       <div class="metric-val">{r.count_mae:.2f}</div>
@@ -514,7 +497,6 @@ def generate(results: Dict[str, Any], timestamp: Optional[str] = None) -> str:
             ("summary",     "Summary"),
             ("label_match", "Label Match"),
             ("vision_parser","Vision Parser"),
-            ("activity_map","Activity Map"),
             ("scan_diff",   "Scan Diff"),
             ("intent",      "Intent (API)"),
             ("react_parser","ReAct (API)"),
@@ -533,6 +515,9 @@ def generate(results: Dict[str, Any], timestamp: Optional[str] = None) -> str:
         sections.append(_activity_map_section(results["activity_map"]))
     if "scan_diff" in results:
         sections.append(_scan_diff_section(results["scan_diff"]))
+    if "activity_map" in results:
+        # Legacy results file may still carry this key; ignore silently.
+        pass
     if "intent" in results:
         sections.append(_intent_section(results["intent"]))
     if "react_parser" in results:

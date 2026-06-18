@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 
 from eval.datasets import REACT_PARSER_CASES
-from eval.metrics import accuracy, mean_absolute_error
+from eval.metrics import accuracy, mean_absolute_error, wilson_ci
 
 
 @dataclass
@@ -22,8 +22,18 @@ class ReactParserResult:
     total: int = 0
     asset_correct: int = 0
     asset_accuracy: float = 0.0
+    asset_ci_low: float = 0.0
+    asset_ci_high: float = 0.0
     count_mae: float = 0.0
+    count_correct: int = 0
+    count_accuracy: float = 0.0
     exact_matches: int = 0  # both asset AND count correct
+    exact_accuracy: float = 0.0
+    # data-quality guard. parse_react_request() swallows API errors and returns
+    # its default {"asset":"chair","min_count":1}, so a run that is silently
+    # rate-limited looks like a uniform chair/1 prediction. Flag that case.
+    suspected_throttling: bool = False
+    default_fallback_rate: float = 0.0
     cases: List[Dict[str, Any]] = field(default_factory=list)
     error: Optional[str] = None
 
@@ -95,13 +105,31 @@ def run() -> ReactParserResult:
 
     total = len(REACT_PARSER_CASES)
     asset_correct = sum(1 for p, g in zip(asset_preds, asset_truth) if p == g)
+    count_correct = sum(1 for p, g in zip(count_preds, count_truth) if p == g)
     exact = sum(1 for c in cases_out if c.get("pass"))
+    ci_low, ci_high = wilson_ci(asset_correct, total)
+
+    # Heuristic throttling detector: fraction of cases that returned the exact
+    # default fallback. >60% strongly suggests the API was rate-limited and the
+    # accuracy figures are not measuring the model.
+    default_hits = sum(1 for c in cases_out
+                       if c.get("predicted_asset") == "chair"
+                       and c.get("predicted_count") == 1)
+    default_rate = default_hits / total if total else 0.0
+    suspected = default_rate > 0.6
 
     return ReactParserResult(
         total=total,
         asset_correct=asset_correct,
         asset_accuracy=asset_correct / total if total else 0.0,
+        asset_ci_low=ci_low,
+        asset_ci_high=ci_high,
         count_mae=mean_absolute_error(count_preds, count_truth),
+        count_correct=count_correct,
+        count_accuracy=count_correct / total if total else 0.0,
         exact_matches=exact,
+        exact_accuracy=exact / total if total else 0.0,
+        suspected_throttling=suspected,
+        default_fallback_rate=default_rate,
         cases=cases_out,
     )

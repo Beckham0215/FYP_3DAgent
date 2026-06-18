@@ -25,9 +25,16 @@ class IntentCase:
     expected_query_area: Optional[str] = None
 
 
+# Full intent taxonomy as routed by route_intent() in groq_service.py.
+# NOTE: this list was previously only 8 classes; the live router added 6 more
+# (list_locations, report_issue, list_problems, scan_area, auto_tag,
+# show_floorplan).  Keeping it in sync is required for the confusion matrix
+# and per-class metrics to be meaningful.
 INTENT_CLASSES = [
     "navigate", "visual", "mark_asset", "activity",
     "conversational", "query_assets", "react_query", "where_am_i",
+    "list_locations", "report_issue", "list_problems",
+    "scan_area", "auto_tag", "show_floorplan",
 ]
 
 INTENT_CASES: List[IntentCase] = [
@@ -101,6 +108,84 @@ INTENT_CASES: List[IntentCase] = [
     IntentCase("what is the weather like", "conversational"),
     IntentCase("what can you do", "conversational"),
     IntentCase("tell me about 3DAgent", "conversational"),
+
+    # list_locations (5)
+    IntentCase("what locations are there", "list_locations"),
+    IntentCase("list all rooms", "list_locations"),
+    IntentCase("what areas have been tagged", "list_locations"),
+    IntentCase("show me all tagged locations", "list_locations"),
+    IntentCase("how many rooms are there", "list_locations"),
+
+    # report_issue (5)
+    IntentCase("report chair #1 has a broken leg", "report_issue",
+               [], None, "chair #1"),
+    IntentCase("the elevator is not working", "report_issue",
+               [], None, "elevator"),
+    IntentCase("log a maintenance issue for the AC unit", "report_issue",
+               [], None, "AC unit"),
+    IntentCase("chair 2 is damaged and wobbly", "report_issue",
+               [], None, "chair 2"),
+    IntentCase("mark the projector as faulty", "report_issue",
+               [], None, "projector"),
+
+    # list_problems (5)
+    IntentCase("what assets have problems", "list_problems"),
+    IntentCase("show faulty equipment", "list_problems"),
+    IntentCase("any maintenance issues", "list_problems"),
+    IntentCase("what needs fixing", "list_problems"),
+    IntentCase("list reported problems", "list_problems"),
+
+    # scan_area (5)
+    IntentCase("scan this area", "scan_area"),
+    IntentCase("scan the room for assets", "scan_area"),
+    IntentCase("detect the objects here", "scan_area"),
+    IntentCase("run a scan", "scan_area"),
+    IntentCase("scan for items", "scan_area"),
+
+    # auto_tag (5)
+    IntentCase("auto tag all locations", "auto_tag"),
+    IntentCase("auto-tag this floor", "auto_tag"),
+    IntentCase("automatically label all the rooms", "auto_tag"),
+    IntentCase("auto tag everything", "auto_tag"),
+    IntentCase("automatically tag all the locations for me", "auto_tag"),
+
+    # show_floorplan (5)
+    IntentCase("show the floor plan", "show_floorplan"),
+    IntentCase("open the map", "show_floorplan"),
+    IntentCase("show me the minimap", "show_floorplan"),
+    IntentCase("display the floor map", "show_floorplan"),
+    IntentCase("bring up the floorplan", "show_floorplan"),
+]
+
+
+# ── Intent Robustness Probes ──────────────────────────────────────────────────
+# Same intents expressed with typos, casual phrasing, and indirect wording.
+# These deliberately differ from the prompt's canonical examples to test
+# generalisation rather than memorisation of the few-shot exemplars.
+
+INTENT_ROBUSTNESS_CASES: List[IntentCase] = [
+    IntentCase("yo where am i rn", "where_am_i"),
+    IntentCase("whats this room called", "where_am_i"),
+    IntentCase("can u take me 2 the kitchen pls", "navigate",
+               ["Kitchen 1", "Bedroom 1", "Office 1"], "Kitchen 1"),
+    IntentCase("head over to the office", "navigate",
+               ["Kitchen 1", "Bedroom 1", "Office 1"], "Office 1"),
+    IntentCase("im hungry and wanna make food", "activity",
+               ["Kitchen 1", "Bedroom 1", "Office 1"], "Kitchen 1"),
+    IntentCase("i'm sleepy", "activity",
+               ["Kitchen 1", "Bedroom 1", "Office 1"], "Bedroom 1"),
+    IntentCase("how many chairs we got in bedroom 1", "query_assets",
+               [], None, None, "bedroom 1"),
+    IntentCase("whats in the living room", "query_assets",
+               [], None, None, "living room"),
+    IntentCase("the printer is jammed again", "report_issue",
+               [], None, "printer"),
+    IntentCase("anything broken around here", "list_problems"),
+    IntentCase("gimme the map", "show_floorplan"),
+    IntentCase("check this room for stuff", "scan_area"),
+    IntentCase("which rooms do we have", "list_locations"),
+    IntentCase("need space for a 12 person workshop", "react_query"),
+    IntentCase("sup", "conversational"),
 ]
 
 
@@ -329,4 +414,8 @@ REACT_PARSER_CASES: List[ReactParserCase] = [
     ReactParserCase("set up a conference for 12 attendees",         "chair", 12),
     ReactParserCase("I want a room with at least 5 tables",         "table",  5),
     ReactParserCase("find a room with 3 desks for studying",        "desk",   3),
+    ReactParserCase("we need seating for 25 people",                "chair", 25),
+    ReactParserCase("a workshop for 6 participants",                "chair",  6),
+    ReactParserCase("find somewhere with 4 whiteboards",           "whiteboard", 4),
+    ReactParserCase("book a space for a team of 9",                 "chair",  9),
 ]

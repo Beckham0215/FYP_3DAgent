@@ -1,6 +1,7 @@
 """Metric computation utilities for 3DAgent evaluation."""
 
-from typing import List, Dict, Optional
+import math
+from typing import List, Dict, Optional, Tuple
 
 
 def accuracy(predictions: List, ground_truth: List) -> float:
@@ -35,8 +36,45 @@ def precision_recall_f1_per_class(
 
 
 def macro_f1(per_class: Dict[str, Dict[str, float]]) -> float:
+    """Unweighted mean of per-class F1 (treats every class equally)."""
     scores = [v["f1"] for v in per_class.values()]
     return sum(scores) / len(scores) if scores else 0.0
+
+
+def weighted_f1(per_class: Dict[str, Dict[str, float]]) -> float:
+    """Support-weighted mean of per-class F1.
+
+    Support for a class = tp + fn (number of ground-truth instances).
+    Robust to class imbalance in a way macro-F1 is not.
+    """
+    total_support = sum(v["tp"] + v["fn"] for v in per_class.values())
+    if total_support == 0:
+        return 0.0
+    return sum(v["f1"] * (v["tp"] + v["fn"]) for v in per_class.values()) / total_support
+
+
+def wilson_ci(correct: int, total: int, z: float = 1.96) -> Tuple[float, float]:
+    """Wilson score 95% confidence interval for a binomial proportion.
+
+    Preferred over the normal approximation for small n and proportions
+    near 0 or 1 (both common in this suite). Returns (low, high) in [0, 1].
+    """
+    if total == 0:
+        return (0.0, 0.0)
+    p = correct / total
+    denom = 1 + z * z / total
+    centre = (p + z * z / (2 * total)) / denom
+    margin = (z * math.sqrt(p * (1 - p) / total + z * z / (4 * total * total))) / denom
+    return (max(0.0, centre - margin), min(1.0, centre + margin))
+
+
+def mean_std(values: List[float]) -> Tuple[float, float]:
+    """Population mean and standard deviation of a list of floats."""
+    if not values:
+        return (0.0, 0.0)
+    mean = sum(values) / len(values)
+    var = sum((v - mean) ** 2 for v in values) / len(values)
+    return (mean, math.sqrt(var))
 
 
 def confusion_matrix(
