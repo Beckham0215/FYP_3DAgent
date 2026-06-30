@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>3DAgent — FYP Phase 2 Slides</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --green:#10a37f; --green2:#1bc99e; --blue:#3b82f6; --purple:#8b5cf6;
+    --orange:#fb923c; --red:#ff5f57;
+    --bg:#0a0a0f; --card:#13131a; --border:rgba(255,255,255,0.08); --muted:rgba(255,255,255,0.45);
+  }
+
+  html,body { height:100%; }
+  body {
+    font-family:'Inter',sans-serif; background:#050507; color:#fff;
+    display:flex; align-items:center; justify-content:center; overflow:hidden;
+  }
+
+  /* ── DECK / SLIDE SCALING ── */
+  #stage { position:relative; width:1280px; height:720px; transform-origin:center center; }
+  .slide {
+    position:absolute; inset:0; width:1280px; height:720px;
+    background:var(--bg); border:1px solid var(--border); border-radius:14px;
+    overflow:hidden; opacity:0; pointer-events:none;
+    transition:opacity .35s ease;
+    display:flex; flex-direction:column;
+  }
+  .slide.active { opacity:1; pointer-events:auto; z-index:2; }
+
+  /* Decorative grid + orbs (shared with poster look) */
+  .slide::before {
+    content:''; position:absolute; inset:0; pointer-events:none;
+    background-image:
+      linear-gradient(rgba(16,163,127,.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(16,163,127,.05) 1px, transparent 1px);
+    background-size:48px 48px;
+  }
+  .orb { position:absolute; border-radius:50%; filter:blur(90px); pointer-events:none; opacity:.5; }
+  .orb-1 { width:480px; height:480px; background:#0e6e57; top:-160px; right:-120px; }
+  .orb-2 { width:380px; height:380px; background:#1e1a6e; bottom:-140px; left:-130px; }
+  .orb-3 { width:260px; height:260px; background:#4c1d95; top:50%; right:-80px; opacity:.3; }
+
+  /* ── slide chrome ── */
+  .slide-pad { position:relative; z-index:2; flex:1; padding:54px 64px; display:flex; flex-direction:column; }
+  .kicker {
+    display:flex; align-items:center; gap:12px; margin-bottom:22px;
+    font-size:12px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--green);
+  }
+  .kicker .num {
+    font-family:'Space Grotesk',sans-serif; font-size:12px; color:var(--muted);
+    border:1px solid var(--border); border-radius:6px; padding:2px 8px; letter-spacing:1px;
+  }
+  .kicker .line { flex:1; height:1px; background:var(--border); }
+  h1.slide-h {
+    font-family:'Space Grotesk',sans-serif; font-size:40px; font-weight:700; letter-spacing:-.5px;
+    line-height:1.1; margin-bottom:8px;
+  }
+  .grad { background:linear-gradient(90deg,#fff 0%,var(--green2) 55%,var(--blue) 100%);
+          -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+
+  /* ── progress / footer bar of each slide ── */
+  .slide-foot {
+    position:absolute; z-index:3; bottom:0; left:0; right:0;
+    display:flex; align-items:center; justify-content:space-between;
+    padding:14px 26px; font-size:12px; color:var(--muted);
+    border-top:1px solid var(--border); background:rgba(0,0,0,.25);
+  }
+  .slide-foot .brand { display:flex; align-items:center; gap:9px; font-weight:600; color:rgba(255,255,255,.7); }
+  .logo-mark {
+    width:26px; height:26px; border-radius:8px; flex-shrink:0;
+    background:linear-gradient(135deg,var(--green),var(--blue));
+    display:flex; align-items:center; justify-content:center; font-size:14px;
+    box-shadow:0 0 18px rgba(16,163,127,.5);
+  }
+
+  /* ════════ SLIDE 1 — TITLE ════════ */
+  .title-wrap { flex:1; display:flex; flex-direction:column; justify-content:center; align-items:flex-start; }
+  .title-logo {
+    width:84px; height:84px; border-radius:22px; margin-bottom:26px;
+    background:linear-gradient(135deg,var(--green),var(--blue));
+    display:flex; align-items:center; justify-content:center; font-size:42px;
+    box-shadow:0 0 40px rgba(16,163,127,.55);
+  }
+  .title-wrap h1 { font-family:'Space Grotesk',sans-serif; font-size:88px; font-weight:700; letter-spacing:-2px; line-height:.95; }
+  .title-wrap .tag { font-size:24px; color:rgba(255,255,255,.8); margin-top:14px; font-weight:400; }
+  .title-wrap .sub { font-size:15px; color:var(--muted); margin-top:8px; max-width:760px; line-height:1.6; }
+  .title-badges { display:flex; gap:10px; margin-top:30px; flex-wrap:wrap; }
+  .badge { padding:7px 16px; border-radius:100px; font-size:12px; font-weight:600; letter-spacing:.4px; border:1px solid; }
+  .b-g { border-color:var(--green); color:var(--green2); background:rgba(16,163,127,.12); }
+  .b-b { border-color:var(--blue); color:#60a5fa; background:rgba(59,130,246,.12); }
+  .b-p { border-color:var(--purple); color:#c084fc; background:rgba(139,92,246,.12); }
+  .title-meta { margin-top:34px; font-size:13px; color:var(--muted); line-height:1.9; }
+  .title-meta strong { color:rgba(255,255,255,.82); font-weight:600; }
+
+  /* ════════ shared content blocks ════════ */
+  .two-col { display:grid; grid-template-columns:1fr 1fr; gap:30px; flex:1; align-content:start; }
+  .panel {
+    background:var(--card); border:1px solid var(--border); border-radius:18px; padding:26px 28px;
+    position:relative; overflow:hidden;
+  }
+  .panel::before { content:''; position:absolute; top:0; left:0; right:0; height:3px; border-radius:18px 18px 0 0; }
+  .panel.p-red::before { background:linear-gradient(90deg,#ff5f57,#fb923c); }
+  .panel.p-green::before { background:linear-gradient(90deg,var(--green),var(--green2)); }
+  .panel-title { font-size:13px; font-weight:700; letter-spacing:1.4px; text-transform:uppercase; margin-bottom:18px; display:flex; align-items:center; gap:9px; }
+  .pt-red { color:#fb7185; } .pt-green { color:var(--green2); } .pt-blue { color:#60a5fa; }
+  .item { display:flex; gap:12px; margin-bottom:15px; font-size:15.5px; line-height:1.5; color:rgba(255,255,255,.78); }
+  .item:last-child { margin-bottom:0; }
+  .item .ix { flex-shrink:0; font-weight:700; font-family:'Space Grotesk',sans-serif; }
+  .ix-red { color:#fb7185; } .ix-green { color:var(--green2); }
+  .item strong { color:#fff; font-weight:600; }
+
+  /* stat strip */
+  .stat-strip { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-top:6px; }
+  .stat-card { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:22px 18px; text-align:center; }
+  .stat-num { font-family:'Space Grotesk',sans-serif; font-size:40px; font-weight:700; line-height:1;
+              background:linear-gradient(135deg,var(--green2),var(--blue));
+              -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+  .stat-label { font-size:12.5px; color:var(--muted); margin-top:8px; line-height:1.4; }
+
+  /* ════════ ARCHITECTURE ════════ */
+  .arch-flow { display:grid; grid-template-columns:repeat(4,1fr); gap:0; margin-bottom:26px; }
+  .arch-layer { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:22px 18px; text-align:center; position:relative; margin:0 10px; }
+  .arch-layer:not(:last-child)::after { content:'→'; position:absolute; right:-16px; top:50%; transform:translateY(-50%); font-size:22px; color:var(--green); font-weight:700; z-index:3; }
+  .arch-ic { width:50px; height:50px; border-radius:13px; display:flex; align-items:center; justify-content:center; font-size:24px; margin:0 auto 12px; }
+  .ic-b { background:rgba(59,130,246,.18); border:1px solid rgba(59,130,246,.35); }
+  .ic-g { background:rgba(16,163,127,.18); border:1px solid rgba(16,163,127,.35); }
+  .ic-p { background:rgba(139,92,246,.18); border:1px solid rgba(139,92,246,.35); }
+  .ic-o { background:rgba(249,115,22,.18); border:1px solid rgba(249,115,22,.35); }
+  .arch-t { font-size:14px; font-weight:700; margin-bottom:10px; }
+  .arch-pills { display:flex; flex-wrap:wrap; gap:5px; justify-content:center; }
+  .pill { font-size:11px; padding:3px 9px; border-radius:100px; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12); color:rgba(255,255,255,.68); }
+  .arch-note { background:linear-gradient(135deg,rgba(16,163,127,.08),rgba(59,130,246,.06)); border:1px solid rgba(16,163,127,.22); border-radius:14px; padding:18px 24px; font-size:15px; line-height:1.6; color:rgba(255,255,255,.8); }
+  .arch-note strong { color:var(--green2); }
+
+  /* ════════ DEMO ════════ */
+  .demo-grid { display:grid; grid-template-columns:1.15fr .85fr; gap:26px; flex:1; }
+  .demo-steps { display:flex; flex-direction:column; gap:13px; }
+  .step { display:flex; align-items:center; gap:16px; background:var(--card); border:1px solid var(--border); border-radius:14px; padding:14px 18px; transition:border-color .2s; }
+  .step:hover { border-color:var(--green); }
+  .step-n { font-family:'Space Grotesk',sans-serif; font-size:22px; font-weight:800; min-width:34px;
+            background:linear-gradient(135deg,var(--green2),var(--blue));
+            -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+  .step-b h4 { font-size:15.5px; font-weight:700; margin-bottom:2px; }
+  .step-b p { font-size:12.5px; color:var(--muted); line-height:1.4; }
+  .demo-aside { display:flex; flex-direction:column; gap:16px; }
+  .say-box { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:20px 22px; }
+  .say-box h4 { font-size:12px; letter-spacing:1.2px; text-transform:uppercase; color:var(--green); margin-bottom:14px; }
+  .say { font-size:14px; color:rgba(255,255,255,.85); background:rgba(59,130,246,.12); border:1px solid rgba(59,130,246,.22); border-radius:9px; padding:8px 12px; margin-bottom:9px; line-height:1.4; }
+  .say:last-child { margin-bottom:0; }
+  .backup { background:linear-gradient(135deg,rgba(249,115,22,.1),rgba(255,95,87,.08)); border:1px solid rgba(249,115,22,.3); border-radius:14px; padding:16px 20px; font-size:13px; line-height:1.55; color:rgba(255,255,255,.78); }
+  .backup strong { color:var(--orange); }
+
+  /* ════════ USABILITY ════════ */
+  .ux-grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; margin-bottom:20px; }
+  .ux-card { background:var(--card); border:1px solid var(--border); border-radius:15px; padding:20px 22px; }
+  .ux-card .ic { font-size:24px; margin-bottom:10px; }
+  .ux-card h4 { font-size:15px; font-weight:700; margin-bottom:6px; }
+  .ux-card p { font-size:13px; color:rgba(255,255,255,.6); line-height:1.55; }
+  .ux-metrics { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; }
+  .uxm { background:linear-gradient(135deg,rgba(16,163,127,.08),rgba(59,130,246,.06)); border:1px solid rgba(16,163,127,.22); border-radius:14px; padding:18px; text-align:center; }
+  .uxm .n { font-family:'Space Grotesk',sans-serif; font-size:30px; font-weight:700; color:var(--green2); line-height:1; }
+  .uxm .l { font-size:12px; color:var(--muted); margin-top:7px; line-height:1.4; }
+
+  /* ════════ CONCLUSION ════════ */
+  .concl-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:18px; flex:1; align-content:start; }
+  .cc { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:22px 22px; position:relative; overflow:hidden; }
+  .cc::before { content:''; position:absolute; top:0; left:0; right:0; height:3px; }
+  .cc-a::before { background:linear-gradient(90deg,var(--green),var(--green2)); }
+  .cc-l::before { background:linear-gradient(90deg,var(--orange),var(--red)); }
+  .cc-f::before { background:linear-gradient(90deg,var(--blue),var(--purple)); }
+  .cc h4 { font-size:13px; letter-spacing:1.3px; text-transform:uppercase; margin-bottom:16px; }
+  .cc-a h4 { color:var(--green2); } .cc-l h4 { color:var(--orange); } .cc-f h4 { color:#60a5fa; }
+  .cc .row { display:flex; gap:10px; margin-bottom:12px; font-size:13.5px; line-height:1.45; color:rgba(255,255,255,.72); }
+  .cc .row:last-child { margin-bottom:0; }
+  .cc .dot { width:6px; height:6px; border-radius:50%; margin-top:6px; flex-shrink:0; }
+  .d-g { background:var(--green2); } .d-o { background:var(--orange); } .d-b { background:#60a5fa; }
+
+  /* ── PRESENTER NOTES BAR ── */
+  #notes {
+    position:fixed; left:0; right:0; bottom:0; z-index:50;
+    background:rgba(8,8,12,.97); border-top:1px solid var(--border);
+    padding:16px 24px 18px; max-height:34vh; overflow:auto; display:none;
+    box-shadow:0 -10px 40px rgba(0,0,0,.6);
+  }
+  #notes.show { display:block; }
+  #notes .nh { font-size:11px; letter-spacing:1.5px; text-transform:uppercase; color:var(--green); margin-bottom:8px; font-weight:700; }
+  #notes .nb { font-size:14.5px; line-height:1.65; color:rgba(255,255,255,.82); max-width:1100px; }
+  #notes .nb strong { color:var(--green2); }
+
+  /* ── on-screen controls ── */
+  #ctrl { position:fixed; top:14px; right:16px; z-index:60; display:flex; gap:8px; }
+  #ctrl button, #dots button { font-family:inherit; }
+  #ctrl button {
+    background:var(--card); color:rgba(255,255,255,.7); border:1px solid var(--border);
+    border-radius:8px; padding:7px 11px; font-size:12px; cursor:pointer; transition:.15s;
+  }
+  #ctrl button:hover { border-color:var(--green); color:#fff; }
+  #dots { position:fixed; bottom:14px; left:50%; transform:translateX(-50%); z-index:60; display:flex; gap:8px; }
+  #dots button { width:9px; height:9px; border-radius:50%; border:none; background:rgba(255,255,255,.2); cursor:pointer; padding:0; transition:.2s; }
+  #dots button.on { background:var(--green2); width:24px; border-radius:5px; }
+  #hint { position:fixed; bottom:13px; right:16px; z-index:60; font-size:11px; color:rgba(255,255,255,.3); }
+
+  @media print {
+    body { display:block; background:#fff; overflow:visible; }
+    #stage { transform:none!important; }
+    #ctrl,#dots,#hint,#notes { display:none!important; }
+    .slide { position:relative; opacity:1!important; pointer-events:auto; page-break-after:always; margin:0 auto 18px; box-shadow:none; }
+  }
+</style>
+</head>
+<body>
+
+<div id="ctrl">
+  <button onclick="prev()">‹ Prev</button>
+  <button onclick="next()">Next ›</button>
+  <button onclick="toggleNotes()" id="notesBtn">Script (N)</button>
+  <button onclick="goFs()">⛶ Full</button>
+</div>
+
+<div id="stage">
+
+  <!-- ═══════════ SLIDE 1 — INTRODUCTION ═══════════ -->
+  <section class="slide" data-notes="Good morning. My project is called <strong>3DAgent</strong> — the idea in one line is: <strong>talk to your building</strong>. Organisations spend a lot to turn facilities into Matterport 3D digital twins, but once captured, that twin is passive — you just click around it. My project adds an <strong>AI agent</strong> on top: you speak or type plain English — 'take me to the nearest fire extinguisher', 'how many chairs are in the meeting room', 'report the projector is broken' — and the agent understands the intent, acts inside the 3D space, and remembers what's there. Let me explain why this matters.">
+    <div class="orb orb-1"></div><div class="orb orb-2"></div><div class="orb orb-3"></div>
+    <div class="slide-pad title-wrap">
+      <div class="title-logo">🎯</div>
+      <h1 class="grad">3DAgent</h1>
+      <div class="tag">Talk to your building.</div>
+      <div class="sub">A conversational AI agent that turns a passive Matterport 3D digital twin into something you can navigate by voice, inventory with vision, and report faults in — using natural language.</div>
+      <div class="title-badges">
+        <span class="badge b-g">Final Year Project · Phase 2</span>
+        <span class="badge b-b">Groq Llama 3.3 70B · Llama 4 Scout</span>
+        <span class="badge b-p">Matterport SDK · YOLOv8 · Grounding DINO</span>
+      </div>
+      <div class="title-meta">
+        <strong>Name:</strong> [Your Name] &nbsp;·&nbsp; <strong>Supervisor:</strong> [Supervisor] &nbsp;·&nbsp; <strong>Programme:</strong> [Programme]<br>
+        <strong>FYP Phase 2 Presentation &amp; Live Demo</strong>
+      </div>
+    </div>
+    <div class="slide-foot"><span class="brand"><span class="logo-mark">🎯</span>3DAgent</span><span>Introduction</span></div>
+  </section>
+
+  <!-- ═══════════ SLIDE 2 — PROBLEM & OBJECTIVES ═══════════ -->
+  <section class="slide" data-notes="The problem. A Matterport twin is beautiful but <strong>passive</strong> — you navigate it manually, and it has no idea what's inside it. The data <em>about</em> the building — asset registers, maintenance logs — sits in spreadsheets <strong>disconnected from the 3D model</strong>, so you know there are forty chairs somewhere but not <em>where</em>. And reporting a fault means describing a location in words, which is slow and error-prone. So I set five objectives: <strong>one</strong>, a natural-language agent that understands intent and acts in the space; <strong>two</strong>, AI vision that detects, counts and outlines assets from the viewport; <strong>three</strong>, maintenance reporting pinned to the exact 3D spot with severity triage; <strong>four</strong>, planning queries — 'a room for ten people' — by reasoning and then verifying with vision; and <strong>five</strong>, something most projects skip — rigorously <strong>evaluating</strong> the AI, not just demoing it.">
+    <div class="orb orb-1"></div><div class="orb orb-2"></div>
+    <div class="slide-pad">
+      <div class="kicker"><span class="num">01</span>Problem Statement &amp; Objectives<span class="line"></span></div>
+      <h1 class="slide-h grad" style="font-size:30px;margin-bottom:24px;">Digital twins are stunning — but passive and disconnected</h1>
+      <div class="two-col">
+        <div class="panel p-red">
+          <div class="panel-title pt-red">⚠ Problems</div>
+          <div class="item"><span class="ix ix-red">1</span><span>3D twins are <strong>passive</strong> — manual click-by-click navigation, no understanding of <strong>what</strong> is in the space.</span></div>
+          <div class="item"><span class="ix ix-red">2</span><span>Asset &amp; facility data lives in <strong>spreadsheets disconnected</strong> from the 3D space — you can't see <strong>where</strong> an asset is.</span></div>
+          <div class="item"><span class="ix ix-red">3</span><span>Reporting a fault means <strong>describing a location in words</strong> — slow and error-prone.</span></div>
+          <div class="item"><span class="ix ix-red">4</span><span>Existing twins have <strong>no natural-language interface</strong> and no automated inventory.</span></div>
+        </div>
+        <div class="panel p-green">
+          <div class="panel-title pt-green">✓ Objectives</div>
+          <div class="item"><span class="ix ix-green">1</span><span>A <strong>natural-language agent</strong> that classifies intent and acts inside a live 3D twin.</span></div>
+          <div class="item"><span class="ix ix-green">2</span><span><strong>AI vision</strong> to detect, count, name &amp; outline assets from the viewport.</span></div>
+          <div class="item"><span class="ix ix-green">3</span><span><strong>Spatially-pinned maintenance</strong> reporting with severity triage &amp; admin workflow.</span></div>
+          <div class="item"><span class="ix ix-green">4</span><span><strong>Planning queries</strong> ("a room for 10") via multi-step reasoning + visual verification.</span></div>
+          <div class="item"><span class="ix ix-green">5</span><span><strong>Rigorously evaluate</strong> the AI components — not just demo them.</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="slide-foot"><span class="brand"><span class="logo-mark">🎯</span>3DAgent</span><span>Problem &amp; Objectives</span></div>
+  </section>
+
+  <!-- ═══════════ SLIDE 3 — ARCHITECTURE (sets up demo) ═══════════ -->
+  <section class="slide" data-notes="Quickly, how it works. Everything starts with what the user says. A <strong>semantic router</strong> running Llama-3.3-70B on Groq classifies the message into one of <strong>14 intents</strong> — navigate, scan, query assets, report a fault, planning, and so on — then routes to one of four subsystems: navigation drives the Matterport SDK, the vision pipeline detects assets, inventory persists what's scanned, and maintenance files reports. The vision pipeline is the part I'm most proud of: a large vision model, <strong>Llama-4 Scout</strong>, <em>names</em> whatever it sees with no fixed class list — so it can say 'fire extinguisher' or 'centrifuge', not just generic classes. Then local CV — <strong>YOLOv8 and Grounding DINO</strong> — draws the boxes for exactly those names, and YOLOv8-seg traces a tight outline. So the cloud model is the brain that names, and the local models are the eyes that point. Now let me show it live.">
+    <div class="orb orb-1"></div><div class="orb orb-3"></div>
+    <div class="slide-pad">
+      <div class="kicker"><span class="num">02</span>System Architecture<span class="line"></span></div>
+      <h1 class="slide-h" style="font-size:28px;margin-bottom:26px;">The cloud model <span class="grad">names</span>; the local models <span class="grad">point</span></h1>
+      <div class="arch-flow">
+        <div class="arch-layer">
+          <div class="arch-ic ic-b">🗣️</div><div class="arch-t">Input</div>
+          <div class="arch-pills"><span class="pill">Voice</span><span class="pill">Text chat</span><span class="pill">Viewport capture</span></div>
+        </div>
+        <div class="arch-layer">
+          <div class="arch-ic ic-g">🧠</div><div class="arch-t">Intent Router</div>
+          <div class="arch-pills"><span class="pill">Llama 3.3 70B</span><span class="pill">14 intents</span><span class="pill">tool-calling</span></div>
+        </div>
+        <div class="arch-layer">
+          <div class="arch-ic ic-p">👁️</div><div class="arch-t">Vision Pipeline</div>
+          <div class="arch-pills"><span class="pill">Scout (names)</span><span class="pill">YOLOv8 + DINO (boxes)</span><span class="pill">seg (outlines)</span></div>
+        </div>
+        <div class="arch-layer">
+          <div class="arch-ic ic-o">⚙️</div><div class="arch-t">Backend</div>
+          <div class="arch-pills"><span class="pill">Flask</span><span class="pill">SQLAlchemy</span><span class="pill">Matterport SDK</span><span class="pill">eval/ suite</span></div>
+        </div>
+      </div>
+      <div class="arch-note">
+        <strong>Why hybrid vision?</strong> A fixed 80-class detector can't name a <em>centrifuge</em> or a <em>fire extinguisher</em>. So an open-vocabulary LLM (Scout) names whatever it sees, then local CV localises <em>exactly those names</em> with tight boxes and outlines — accurate names <em>and</em> reliable boxes, with a local-CV fallback if the cloud is unavailable.
+      </div>
+    </div>
+    <div class="slide-foot"><span class="brand"><span class="logo-mark">🎯</span>3DAgent</span><span>Architecture</span></div>
+  </section>
+
+  <!-- ═══════════ SLIDE 4 — SYSTEM DEMO ═══════════ -->
+  <section class="slide" data-notes="I'll demo six things in order, live. <strong>One — navigation:</strong> I say 'take me to the kitchen' and the twin flies there; then 'take me to the nearest fire extinguisher' — it navigates to a physical object, not just a room. <strong>Two — scan:</strong> I run Scan Area and the agent detects, counts and <em>outlines</em> each asset, saved per-instance as chair #1, chair #2. <strong>Three — auto-tag:</strong> the agent walks every sweep and names each area automatically. <strong>Four — planning:</strong> 'I need a meeting room for 10 people' — it reasons that's ten chairs, finds candidate rooms, and verifies with live vision. <strong>Five — report a fault:</strong> 'report chair #1 has a broken leg' — it infers severity, files a report pinned to that exact chair, and flies there; the admin side ranks by severity and tracks status. <strong>Six — dashboard:</strong> inventory, analytics and CSV/PDF export. If any step stalls on WiFi for ~30 seconds, I switch to the backup video for that step and carry on — but I run live first.">
+    <div class="orb orb-2"></div><div class="orb orb-3"></div>
+    <div class="slide-pad">
+      <div class="kicker"><span class="num">03</span>System Demo&nbsp;·&nbsp;Live<span class="line"></span></div>
+      <h1 class="slide-h" style="font-size:28px;margin-bottom:22px;">Six steps — <span class="grad">understand → inventory → act → report</span></h1>
+      <div class="demo-grid">
+        <div class="demo-steps">
+          <div class="step"><span class="step-n">1</span><div class="step-b"><h4>Natural-language navigation</h4><p>Voice / text → fly to a room <em>or</em> a physical object.</p></div></div>
+          <div class="step"><span class="step-n">2</span><div class="step-b"><h4>Scan a room</h4><p>Detect, count &amp; outline assets — saved per-instance.</p></div></div>
+          <div class="step"><span class="step-n">3</span><div class="step-b"><h4>Auto-tag locations</h4><p>Vision names every sweep; nearby rooms stay consistent.</p></div></div>
+          <div class="step"><span class="step-n">4</span><div class="step-b"><h4>Planning query (ReAct)</h4><p>"Room for 10" → reason → verify with live vision.</p></div></div>
+          <div class="step"><span class="step-n">5</span><div class="step-b"><h4>Report a fault</h4><p>Pinned in 3D · severity inferred · admin triage.</p></div></div>
+          <div class="step"><span class="step-n">6</span><div class="step-b"><h4>Dashboard &amp; export</h4><p>Inventory, analytics, CSV / PDF handover.</p></div></div>
+        </div>
+        <div class="demo-aside">
+          <div class="say-box">
+            <h4>🎤 What I'll say</h4>
+            <div class="say">"Take me to the nearest fire extinguisher."</div>
+            <div class="say">"Scan this area."</div>
+            <div class="say">"I need a meeting room for 10 people."</div>
+            <div class="say">"Report chair #1 has a broken leg."</div>
+          </div>
+          <div class="backup">
+            <strong>▶ Backup ready.</strong> A full demo video is recorded as a fallback. Live system runs first; if a step stalls (~30s), I switch to the video for that step only.
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="slide-foot"><span class="brand"><span class="logo-mark">🎯</span>3DAgent</span><span>System Demo</span></div>
+  </section>
+
+  <!-- ═══════════ SLIDE 5 — USABILITY / UX ═══════════ -->
+  <section class="slide" data-notes="On usability. The system is built around <strong>two real roles</strong> — the worker who reports and navigates, and the admin who triages — and the interface adapts to each. The core UX decision was to make input as <strong>low-friction as possible</strong>: natural language and voice, so there's nothing to learn — you say what you want and the agent figures out the action. The second decision was <strong>transparency to build trust</strong>: AI that just gives an answer is hard to trust, so every detected asset is <em>outlined right in the view</em> and every fault is shown <em>in its real location</em> — the user sees the evidence. And rather than just claim it works, I measured it: the intent router scores <strong>98.6% accuracy across all 14 intents</strong> with a confidence interval, and <strong>100% on slot-filling</strong> — extracting the right room or asset name. Database responses are a couple of milliseconds. So the experience is both low-effort and verifiably accurate.">
+    <div class="orb orb-1"></div><div class="orb orb-2"></div>
+    <div class="slide-pad">
+      <div class="kicker"><span class="num">04</span>Usability &amp; User Experience<span class="line"></span></div>
+      <h1 class="slide-h" style="font-size:28px;margin-bottom:22px;">Low-effort input, <span class="grad">visible</span> evidence, measured quality</h1>
+      <div class="ux-grid">
+        <div class="ux-card"><div class="ic">👥</div><h4>Role-aware for two users</h4><p>Workers report &amp; navigate; admins triage &amp; assign. The UI adapts to each role.</p></div>
+        <div class="ux-card"><div class="ic">🗣️</div><h4>Lowest-friction input</h4><p>Plain language and voice — no menus to learn. The agent maps speech → action.</p></div>
+        <div class="ux-card"><div class="ic">🔍</div><h4>Trust through transparency</h4><p>Every detected asset is <strong>outlined in view</strong>; faults are shown <strong>in place</strong> — users see <em>why</em>.</p></div>
+        <div class="ux-card"><div class="ic">🛟</div><h4>Graceful fallbacks</h4><p>Local CV backs up cloud vision; dual API keys dodge rate limits; progress loaders on long actions.</p></div>
+      </div>
+      <div class="ux-metrics">
+        <div class="uxm"><div class="n">98.6%</div><div class="l">Intent accuracy<br>(14 classes · 95% CI 92–99.7%)</div></div>
+        <div class="uxm"><div class="n">100%</div><div class="l">Slot-filling accuracy<br>(room / asset extraction)</div></div>
+        <div class="uxm"><div class="n">~1–2 ms</div><div class="l">DB endpoint latency<br>(p50)</div></div>
+      </div>
+      <p style="font-size:11.5px;color:var(--muted);margin-top:14px;">↳ Optional: add small user-study results here (testers, task success rate, SUS score) if conducted.</p>
+    </div>
+    <div class="slide-foot"><span class="brand"><span class="logo-mark">🎯</span>3DAgent</span><span>Usability / UX</span></div>
+  </section>
+
+  <!-- ═══════════ SLIDE 6 — CONCLUSION ═══════════ -->
+  <section class="slide" data-notes="To conclude. What I've <strong>achieved</strong>: a working conversational agent on a live digital twin, voice and text, fourteen intents; a hybrid vision pipeline that detects, counts and <em>outlines</em> assets and can auto-tag whole floors; maintenance reporting pinned in 3D with a triage workflow; planning queries that reason and verify; and an evaluation suite that measures it. The <strong>limitations</strong>, honestly: the AI depends on internet and the Groq API, and the free tier has a daily token cap, so heavy continuous use is constrained; scans take a few seconds because they chain a cloud model and local models; and auto-tag room grouping is geometry-based — it doesn't know where the walls are — so a viewpoint in a doorway can be misjudged. For <strong>future work</strong>: move models on-device or cache them to cut the internet dependence; wall-aware segmentation for perfect tagging; scheduled re-scans with inventory-drift alerts; and a mobile experience with QR codes that jump from a physical asset to its digital twin. Thank you — I'm happy to take questions.">
+    <div class="orb orb-1"></div><div class="orb orb-2"></div><div class="orb orb-3"></div>
+    <div class="slide-pad">
+      <div class="kicker"><span class="num">05</span>Conclusion<span class="line"></span></div>
+      <h1 class="slide-h" style="font-size:28px;margin-bottom:24px;">Achievements, honest limitations, and what's next</h1>
+      <div class="concl-grid">
+        <div class="cc cc-a">
+          <h4>✓ Achievements</h4>
+          <div class="row"><span class="dot d-g"></span>Conversational agent over a live twin — 14 intents, voice + text</div>
+          <div class="row"><span class="dot d-g"></span>Hybrid open-vocab vision: detect, count &amp; <strong>outline</strong> assets</div>
+          <div class="row"><span class="dot d-g"></span>Auto-tag whole floors from vision</div>
+          <div class="row"><span class="dot d-g"></span>Maintenance pinned in 3D with severity triage</div>
+          <div class="row"><span class="dot d-g"></span>ReAct planning with visual verification</div>
+          <div class="row"><span class="dot d-g"></span>Rigorous evaluation suite (CIs, slot-filling, latency)</div>
+        </div>
+        <div class="cc cc-l">
+          <h4>⚠ Current Limitations</h4>
+          <div class="row"><span class="dot d-o"></span>Vision/LLM need <strong>internet + Groq API</strong>; free-tier daily token cap</div>
+          <div class="row"><span class="dot d-o"></span>Scans take a few seconds (cloud + local pipeline)</div>
+          <div class="row"><span class="dot d-o"></span>Auto-tag is geometry-based, <strong>not wall-aware</strong> (doorway edge-cases)</div>
+          <div class="row"><span class="dot d-o"></span>Single-user ownership; no multi-tenant org accounts yet</div>
+        </div>
+        <div class="cc cc-f">
+          <h4>→ Future Work</h4>
+          <div class="row"><span class="dot d-b"></span>On-device / cached models to cut internet dependence</div>
+          <div class="row"><span class="dot d-b"></span>Wall-aware room segmentation for perfect auto-tagging</div>
+          <div class="row"><span class="dot d-b"></span>Scheduled re-scans + <strong>inventory-drift alerts</strong></div>
+          <div class="row"><span class="dot d-b"></span>Mobile app + QR deep-links from asset → twin &amp; history</div>
+          <div class="row"><span class="dot d-b"></span>Multi-tenant org accounts &amp; collaboration</div>
+        </div>
+      </div>
+    </div>
+    <div class="slide-foot"><span class="brand"><span class="logo-mark">🎯</span>3DAgent</span><span>Conclusion · Thank you</span></div>
+  </section>
+
+</div>
+
+<div id="dots"></div>
+<div id="notes"><div class="nh">Speaker script — Slide <span id="nNum">1</span></div><div class="nb" id="nBody"></div></div>
+<div id="hint">← → navigate · N script · F fullscreen</div>
+
+<script>
+  const slides = Array.from(document.querySelectorAll('.slide'));
+  let cur = 0;
+
+  // build dots
+  const dotsWrap = document.getElementById('dots');
+  slides.forEach((_, i) => {
+    const b = document.createElement('button');
+    b.onclick = () => show(i);
+    dotsWrap.appendChild(b);
+  });
+  const dots = Array.from(dotsWrap.children);
+
+  function show(i) {
+    cur = Math.max(0, Math.min(slides.length - 1, i));
+    slides.forEach((s, k) => s.classList.toggle('active', k === cur));
+    dots.forEach((d, k) => d.classList.toggle('on', k === cur));
+    updateNotes();
+  }
+  function next() { show(cur + 1); }
+  function prev() { show(cur - 1); }
+
+  function updateNotes() {
+    document.getElementById('nNum').textContent = (cur + 1);
+    document.getElementById('nBody').innerHTML = slides[cur].getAttribute('data-notes') || '';
+  }
+  function toggleNotes() {
+    const n = document.getElementById('notes');
+    n.classList.toggle('show');
+    document.getElementById('notesBtn').style.borderColor = n.classList.contains('show') ? 'var(--green)' : '';
+    fitStage();
+  }
+  function goFs() {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+    else document.exitFullscreen();
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { next(); e.preventDefault(); }
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { prev(); e.preventDefault(); }
+    else if (e.key.toLowerCase() === 'n') { toggleNotes(); }
+    else if (e.key.toLowerCase() === 'f') { goFs(); }
+    else if (e.key === 'Home') { show(0); }
+    else if (e.key === 'End') { show(slides.length - 1); }
+  });
+
+  // Scale the 1280×720 stage to fit the window (leaving room for notes if open)
+  function fitStage() {
+    const stage = document.getElementById('stage');
+    const notesOpen = document.getElementById('notes').classList.contains('show');
+    const availH = window.innerHeight * (notesOpen ? 0.62 : 0.94);
+    const availW = window.innerWidth * 0.96;
+    const scale = Math.min(availW / 1280, availH / 720);
+    stage.style.transform = `scale(${scale})`;
+  }
+  window.addEventListener('resize', fitStage);
+
+  show(0);
+  fitStage();
+</script>
+</body>
+</html>

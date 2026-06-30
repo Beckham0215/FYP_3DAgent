@@ -295,10 +295,23 @@
     }
   }
 
+  // Mechanical action confirmations the agent emits ("Navigating to Lobby…",
+  // "📍 Route to Lobby — 2 steps", etc.). These are not part of the real Q&A and,
+  // if fed back into the router as conversation context, make it anchor on the
+  // last place visited (e.g. every later "bring me to…" snaps to Lobby). We keep
+  // them on screen but strip them from the history the router sees.
+  const _ACTION_CONFIRM_RE = /^(navigating to|📍 route to|found .*taking you|opening the scanner|opening auto-tag|opening the floor plan)/i;
+
+  function _routerHistory() {
+    return chatHistory
+      .slice(0, -1)  // drop the current user message (last entry)
+      .filter((m) => !(m.role === "assistant" && _ACTION_CONFIRM_RE.test((m.content || "").trim())));
+  }
+
   async function postVla(body) {
-    // Attach all history except the current user message (last entry)
+    // Attach conversational history (excluding mechanical action confirmations).
     if (!body.history) {
-      body.history = chatHistory.slice(0, -1);
+      body.history = _routerHistory();
     }
     const res = await fetch("/api/vla", {
       method: "POST",
@@ -1180,7 +1193,12 @@
       // list. baseLabel = the room name without the "#n" sweep suffix.
       const categoryCounters = {};    // category -> highest room number
       const roomSweepCounters = {};   // baseLabel -> highest sweep number
-      const placed = [];              // {x, z, floorId, category, baseLabel, label}
+      const placed = [];              // {x, z, floorId, category, baseLabel, label} — every tagged sweep (nearby-name context)
+      // Anchors are ONLY the sweeps a vision model actually named (or pre-existing
+      // tags). The cheap "same room" reuse below matches against anchors, NOT every
+      // placed sweep — otherwise each reused sweep becomes a new reuse source and
+      // one room name transitively floods the whole connected floor.
+      const anchors = [];             // {x, z, floorId, category, baseLabel}
       existingAssets.forEach(a => {
         const lbl = (a.label_name || "").trim();
         const sm = lbl.match(/^(.*?)\s*#(\d+)\s*$/);          // "<base> #<n>"
@@ -1198,13 +1216,15 @@
         }
         const sd = allSweepData[a.sweep_uuid];
         if (sd && sd.position) {
-          placed.push({
+          const rec = {
             x: sd.position.x, z: sd.position.z,
             floorId: (sd.floorInfo || {}).id,
             category: (a.category || "").trim(),
             baseLabel: baseLabel,
             label: lbl,
-          });
+          };
+          placed.push(rec);
+          anchors.push(rec);  // pre-existing tags are trusted room anchors
         }
       });
 
@@ -1225,10 +1245,12 @@
       if (autoTagStatusEl) autoTagStatusEl.textContent = `0 / ${total} tagged`;
       setAgentLoader(`Tagging ${total} location(s)…`, 0);
 
-      // Nearest already-placed point on the same floor, within `radius`.
-      function _nearestPlaced(x, z, floorId, radius) {
+      // Nearest vision-named ANCHOR on the same floor, within `radius`.
+      // Searching anchors (not every placed sweep) is what stops one room name
+      // from flood-filling the whole floor through chained reuse.
+      function _nearestAnchor(x, z, floorId, radius) {
         let best = null, bestD = radius;
-        placed.forEach(p => {
+        anchors.forEach(p => {
           if (floorId != null && p.floorId != null && String(p.floorId) !== String(floorId)) return;
           const d = _horizDist(x, z, p.x, p.z);
           if (d <= bestD) { bestD = d; best = p; }
@@ -1251,7 +1273,7 @@
 
         // 1) Very close to an already-named point on the same floor → SAME ROOM:
         //    reuse the room's base name (no camera move, no API call).
-        const sameRoom = pos ? _nearestPlaced(pos.x, pos.z, floorId, AUTOTAG_ROOM_RADIUS) : null;
+        const sameRoom = pos ? _nearestAnchor(pos.x, pos.z, floorId, AUTOTAG_ROOM_RADIUS) : null;
         if (sameRoom) {
           baseLabel = sameRoom.baseLabel;
           category = sameRoom.category;
@@ -1327,7 +1349,13 @@
           const markData = await markRes.json().catch(() => ({}));
           if (markData.ok) {
             tagged++;
-            if (pos) placed.push({ x: pos.x, z: pos.z, floorId: floorId, category: category || "", baseLabel: baseLabel, label: label });
+            if (pos) {
+              const rec = { x: pos.x, z: pos.z, floorId: floorId, category: category || "", baseLabel: baseLabel, label: label };
+              placed.push(rec);
+              // Only vision-named sweeps extend a room's reach. Same-room reuses
+              // must NOT become anchors, or the flood-fill chaining returns.
+              if (!sameRoom) anchors.push(rec);
+            }
             taggedResults.push({
               asset_id: markData.asset_id, label: label, category: category || "",
               sweep_uuid: sweep.uuid, x: pos ? pos.x : null, z: pos ? pos.z : null, floorId: floorId,
@@ -4192,7 +4220,6 @@
           appendLine("system", "Marking failed: " + (err.message || String(err)));
         }
       } else if (data.intent === "navigate" && data.sweep_uuid) {
-        appendLine("agent", "Navigating to " + (data.label || "destination") + "…");
         await navigateWithRoute(data.sweep_uuid, data.label || "destination");
       } else if (data.intent === "navigate_asset" && data.instances?.length) {
         const nearest = findNearestAssetInstance(data.instances);
@@ -4200,7 +4227,22 @@
           const label = nearest.area_name
             ? `${data.asset_name} in ${nearest.area_name}`
             : data.asset_name;
-          appendLine("agent", `Navigating to ${label}…`);
+          // When several instances exist, say where they are and that we're
+          // heading to the closest by walking distance — so "why not the lobby
+          // one?" is answered up front (the lobby one is simply farther).
+          if (data.instances.length > 1) {
+            const areas = {};
+            data.instances.forEach((i) => {
+              const a = i.area_name || "an unspecified area";
+              areas[a] = (areas[a] || 0) + 1;
+            });
+            const where = Object.entries(areas)
+              .map(([a, c]) => (c > 1 ? `${a} (${c})` : a))
+              .join(", ");
+            appendLine("agent",
+              `Found ${data.asset_name} in ${where}. Taking you to the nearest` +
+              (nearest.area_name ? ` — ${nearest.area_name}.` : "."));
+          }
           await navigateWithRoute(nearest.sweep_uuid, label);
           if (nearest.best_angle != null) {
             await sleep(1200);

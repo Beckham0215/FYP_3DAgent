@@ -4,6 +4,7 @@ from functools import wraps
 
 from flask import Blueprint, current_app, jsonify, request, session
 
+from app.asset_canon import canonicalize_detection
 from app.extensions import db
 from app.label_match import resolve_asset
 from app.models import Asset, AssetsSummary, ChatHistoryLog, MaintenanceReport, MatterportSpace, ScanHistory, User
@@ -387,31 +388,94 @@ def vla():
             if area_name:
                 session[f"last_queried_area_{map_id}"] = area_name
 
+        from difflib import get_close_matches
+
+        def _match_names(row_set):
+            """Names in row_set that match asked_asset (exact → substring → fuzzy)."""
+            names = list({(r.asset_name or "").lower() for r in row_set if r.asset_name})
+            target = asked_asset.rstrip("s")
+            m = [n for n in names if n == asked_asset or n == target or (target and (target in n or n in target))]
+            if not m:
+                m = get_close_matches(target, names, n=3, cutoff=0.6)
+            return set(m), (target or asked_asset)
+
+        def _breakdown(row_set, matched):
+            """(total, {area_name: count}) for rows whose name is in `matched`."""
+            per_area = {}
+            for r in row_set:
+                if (r.asset_name or "").lower() in matched:
+                    a = r.area_name or "an unspecified area"
+                    per_area[a] = per_area.get(a, 0) + (r.count or 0)
+            return sum(per_area.values()), per_area
+
+        # ── Specific-item question, e.g. "how many chairs" / "is there a fire extinguisher" ──
+        if asked_asset:
+            matched, label = _match_names(rows)
+
+            # Found in the requested area → answer for that area.
+            if matched:
+                total, _ = _breakdown(rows, matched)
+                if total == 1:
+                    reply = f"There is 1 {label} in {area_label}."
+                else:
+                    reply = f"There are {total} {label}s in {area_label}."
+                _log_chat(uid, map_id, message, reply)
+                return jsonify({"ok": True, "intent": "chat", "response": reply})
+
+            # Not in the requested area → look across the WHOLE space before giving
+            # up, so "is there a fire extinguisher" finds it even if the current
+            # room has none (or hasn't been scanned).
+            if not scope_all:
+                all_matched, _ = _match_names(all_rows)
+                if all_matched:
+                    total, per_area = _breakdown(all_rows, all_matched)
+                    where = ", ".join(f"{c} in {a}" for a, c in sorted(per_area.items()))
+                    here = area_label if rows else f"{area_label} (not scanned yet)"
+                    reply = (
+                        f"There are no {label}s in {here}, but I found {total} "
+                        f"elsewhere in this space: {where}."
+                    )
+                    _log_chat(uid, map_id, message, reply)
+                    return jsonify({"ok": True, "intent": "chat", "response": reply})
+
+            # No name match anywhere → maybe a PROPERTY/CATEGORY question
+            # ("flammable", "electronics", "anything dangerous"). Let the LLM
+            # filter the scanned items by concept — first in the requested area,
+            # then across the whole space.
+            for scope_rows, scope_label in ((rows, area_label), (all_rows, "the whole space")):
+                names = list({(r.asset_name or "").lower() for r in scope_rows if r.asset_name})
+                if not names:
+                    continue
+                sem = groq_service.filter_assets_semantically(message, names)
+                sem_matched = set(sem.get("matched") or [])
+                concept = sem.get("concept") or label
+                if sem_matched:
+                    totals = {}
+                    for r in scope_rows:
+                        nm = (r.asset_name or "").lower()
+                        if nm in sem_matched:
+                            totals[nm] = totals.get(nm, 0) + (r.count or 0)
+                    parts = [f"{cnt} {nm}" + ("" if cnt == 1 else "s")
+                             for nm, cnt in sorted(totals.items()) if cnt > 0]
+                    reply = (
+                        f"Potentially {concept} items in {scope_label}: {', '.join(parts)}. "
+                        f"(Inferred from the scanned object names — please verify on site.)"
+                    )
+                    _log_chat(uid, map_id, message, reply)
+                    return jsonify({"ok": True, "intent": "chat", "response": reply})
+                if scope_rows is all_rows:  # exhausted both scopes
+                    break
+
+            reply = f"I couldn't find any {label} in the scanned assets for this space."
+            _log_chat(uid, map_id, message, reply)
+            return jsonify({"ok": True, "intent": "chat", "response": reply})
+
+        # ── No specific item: list what's in the requested area ──
         if not rows:
             reply = f"No assets have been recorded for {area_label}. Try scanning it first with the Scan Area tool."
             _log_chat(uid, map_id, message, reply)
             return jsonify({"ok": True, "intent": "chat", "response": reply})
 
-        # ── Specific-item count, e.g. "how many chairs" ──
-        if asked_asset:
-            from difflib import get_close_matches
-            names = list({(r.asset_name or "").lower() for r in rows if r.asset_name})
-            target = asked_asset.rstrip("s")
-            matched = [n for n in names if n == asked_asset or n == target or (target and (target in n or n in target))]
-            if not matched:
-                matched = get_close_matches(target, names, n=3, cutoff=0.6)
-            total = sum(r.count or 0 for r in rows if (r.asset_name or "").lower() in matched)
-            label = target or asked_asset
-            if total == 0:
-                reply = f"There are no {label}s recorded in {area_label}."
-            elif total == 1:
-                reply = f"There is 1 {label} in {area_label}."
-            else:
-                reply = f"There are {total} {label}s in {area_label}."
-            _log_chat(uid, map_id, message, reply)
-            return jsonify({"ok": True, "intent": "chat", "response": reply})
-
-        # ── Otherwise, list everything (summed per item) ──
         totals = {}
         for r in rows:
             if r.asset_name:
@@ -880,18 +944,13 @@ def scan_assets():
         current_app.logger.exception("Scan assets vision detector failed")
         return jsonify({"ok": False, "error": f"Vision detection failed: {e!s}"}), 500
 
-    # Clean up detected object names/counts
-    cleaned_counts = {}
-    for name, count in object_counts.items():
-        label = (name or "").strip().lower()
-        if label and count > 0:
-            cleaned_counts[label] = count
-
-    # Bounding boxes come straight from the YOLO detection pass (no extra model
-    # call), so highlight data is available instantly. positions = prominent box
-    # per object; positions_all = every instance's box for per-asset audits.
-    positions = {name: raw_positions[name] for name in cleaned_counts if name in raw_positions}
-    positions_all = {name: raw_positions_all[name] for name in cleaned_counts if name in raw_positions_all}
+    # Canonicalise object names so the same physical thing isn't split across
+    # synonyms/plurals/colour variants ("office chairs", "blue chair" -> "chair"
+    # family). Counts, the prominent box, and the per-instance boxes are all
+    # remapped together so highlighting keys stay consistent downstream.
+    cleaned_counts, positions, positions_all = canonicalize_detection(
+        object_counts, raw_positions, raw_positions_all
+    )
 
     current_app.logger.info(f"[Scan] Detected {len(cleaned_counts)} items, located {len(positions)} bboxes")
     return jsonify({"ok": True, "objects": cleaned_counts, "positions": positions, "positions_all": positions_all})

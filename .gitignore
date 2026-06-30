@@ -1,9 +1,24 @@
+# Secrets & env
 .env
-instance/
+
+# Python
 __pycache__/
 *.py[cod]
-*.db
+*.egg-info/
 .venv/
 venv/
-*.egg-info/
+
+# Flask / app data
+instance/
+*.db
+
+# Tooling
 .claude/
+
+# Model weights (download separately, not versioned)
+*.pt
+
+# Generated eval artifacts
+eval_results.json
+eval/eval_report.html
+eval_report.html

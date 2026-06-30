@@ -57,7 +57,7 @@ def route_intent(user_message: str, asset_labels: list[str], last_queried_area: 
         "Classify the user message into exactly one intent:\n"
         "- where_am_i: user asks about their current location, which room or area they are in right now (e.g. 'where am I', 'what room is this', 'which location am I in', 'what place is this', 'tell me my current location').\n"
         "- react_query: user has a complex multi-step planning request requiring room suitability verification (e.g. 'I need a meeting room for 10 people', 'find a room that fits 15 people', 'which room has enough chairs for a seminar', 'I need to host a dinner for 8 people', 'set up a conference for 20 attendees').\n"
-        "- query_assets: user asks WHAT items are in a room/area OR HOW MANY of a specific item there are (e.g. 'what are the assets in bedroom 1', 'how many chairs in the kitchen', 'how many chairs in this location', 'how many tables are here', 'what furniture is in the living room', 'how many chairs in total'). Put the specific item (SINGULAR, e.g. 'chair') in asset_name when they ask about one item type, else null.\n"
+        "- query_assets: user asks WHAT items are in a room/area, HOW MANY of a specific item there are, OR whether any items match a PROPERTY/CATEGORY (e.g. 'what are the assets in bedroom 1', 'how many chairs in the kitchen', 'how many chairs in this location', 'how many tables are here', 'what furniture is in the living room', 'how many chairs in total', 'is there anything flammable', 'any electronics here', 'what items are dangerous', 'is there any safety equipment'). Put the specific item OR the property/category word (SINGULAR, e.g. 'chair', 'flammable', 'electronic') in asset_name; use null only if they ask to list everything.\n"
         "- list_locations: user asks what locations/rooms/areas exist or are tagged (e.g. 'what locations are there', 'list all rooms', 'what areas have been tagged', 'show me all tagged locations', 'how many rooms are there').\n"
         "- report_issue: user wants to report a fault, damage, or maintenance problem with a specific asset/equipment (e.g. 'report chair #1 has a broken leg', 'the elevator is not working', 'log a maintenance issue for the AC unit', 'chair 2 is damaged and wobbly', 'mark the projector as faulty').\n"
         "- list_problems: user asks which assets/equipment have problems, faults, or pending maintenance (e.g. 'what assets have problems', 'show faulty equipment', 'any maintenance issues', 'what needs fixing', 'list reported problems').\n"
@@ -67,7 +67,7 @@ def route_intent(user_message: str, asset_labels: list[str], last_queried_area: 
         "- navigate: user wants to go to a place, room, tagged sweep, OR a specific physical object/asset (e.g. 'take me to the kitchen', 'go to bedroom', 'bring me to the fire extinguisher', 'navigate to forklift', 'take me to the nearest chair').\n"
         "- visual: user asks about what is visible in the current view, colors, objects, 'what do you see', 'is there a chair', 'describe this view'.\n"
         "- mark_asset: user wants to tag or mark the CURRENT location with a name (e.g. 'mark this as kitchen', 'tag this place as bedroom', 'help me mark this location as office').\n"
-        "- activity: user wants to do an activity that requires going to a specific location (e.g. 'I want to cook', 'I want to sleep', 'I need to work').\n"
+        "- activity: user wants to do an activity that requires going to a specific location, including 'take/bring me to somewhere I can <activity>' phrasings (e.g. 'I want to cook', 'I want to sleep', 'I need to work', 'bring me to somewhere I can eat snacks', 'take me somewhere I can drink coffee', 'where can I rest'). Infer the activity's location (eat/snack/drink/coffee -> pantry or kitchen; cook -> kitchen; sleep -> bedroom; rest -> rest area/lounge) and match it to the available labels. This is activity, NOT navigate, even when it starts with 'bring/take me to'.\n"
         "- conversational: greetings, small talk, general questions not about the current view or moving in the space.\n\n"
         "Respond with ONLY valid JSON (no markdown fences):\n"
         '{"intent":"navigate"|"visual"|"mark_asset"|"activity"|"conversational"|"query_assets"|"react_query"|"where_am_i"|"report_issue"|"list_problems"|"list_locations"|"scan_area"|"auto_tag"|"show_floorplan","destination_label":string or null,"asset_name":string or null,"query_area":string or null,"reply":string or null}\n'
@@ -280,11 +280,17 @@ def _scout_detect_objects(image_b64: str, area_context: str | None = None) -> di
         "RULES:\n"
         "- Only count items CLEARLY VISIBLE and CLOSE to the camera (foreground/middle ground "
         "of this room). Ignore anything far away, blurry, through a doorway, or in an adjacent room.\n"
-        "- Name each item with its MOST SPECIFIC real-world name, not a vague category. "
+        "- Name each item by its FUNCTIONAL TYPE, not a vague category. "
         "Prefer 'fire extinguisher', 'office chair', 'filing cabinet', 'forklift', 'pallet', "
         "'server rack', 'whiteboard', 'monitor', 'printer', 'water dispenser', 'workbench', "
         "'microscope', 'fume hood', 'shelving rack' over generic words like 'object', 'equipment', "
         "'furniture', 'thing', or 'machine'.\n"
+        "- Do NOT add colour, material, pattern, or size words to the name. "
+        "Say 'chair', not 'blue chair' or 'teal chair'; 'couch', not 'gray couch'; "
+        "'counter', not 'wooden counter'; 'rug', not 'patterned rug'.\n"
+        "- Use ONE consistent name for each kind of object across the whole list — "
+        "don't call the same thing both 'couch' and 'sofa', or 'mouse' and 'computer mouse'. "
+        "Pick the simplest common name.\n"
         "- Use the SINGULAR noun as the key (chair, not chairs) and count the instances.\n"
         "- Do NOT list the room itself, walls, floor, ceiling, windows, or doors.\n"
         "Reply ONLY as a comma-separated 'item: count' list, e.g.: "
@@ -829,3 +835,58 @@ def parse_react_request(user_message: str) -> dict:
     except Exception as e:
         current_app.logger.exception(f"[Groq] parse_react_request failed: {e}")
     return {"asset": "chair", "min_count": 1, "reasoning": "Looking for a suitable room"}
+
+
+def filter_assets_semantically(question: str, asset_names: list[str]) -> dict:
+    """Pick which scanned assets satisfy a conceptual/category question.
+
+    Used as a fallback when a literal name match fails — e.g. "is there
+    anything flammable?", "any electronics?", "what's valuable?". The model
+    reasons over the asset NAMES only (it can't see the objects), so the
+    result is an inference, not a verified fact; callers should phrase replies
+    accordingly ("potentially flammable").
+
+    Returns {"matched": [<names that fit>], "concept": "<short label>"}.
+    Names in "matched" are guaranteed to be a subset of asset_names.
+    """
+    names = [n for n in (asset_names or []) if n]
+    if not question or not names:
+        return {"matched": [], "concept": ""}
+
+    model = current_app.config.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+    catalogue = ", ".join(sorted(set(names)))
+    prompt = (
+        "You are filtering an inventory of physical objects in a building.\n"
+        f"The user asked: \"{question}\"\n"
+        f"The objects present are: {catalogue}.\n"
+        "Decide which of these objects match the property/category the user is asking about. "
+        "Reason from common real-world knowledge (e.g. a couch, curtains, paper and cardboard are flammable; "
+        "a monitor and laptop are electronics). Only choose from the listed objects — never invent new ones. "
+        "If none fit, return an empty list.\n"
+        'Respond ONLY with valid JSON, no markdown: '
+        '{"concept": "flammable", "matched": ["couch", "chair"]}'
+    )
+    try:
+        completion = _groq_create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=300,
+        )
+        text = (completion.choices[0].message.content or "").strip()
+        m = re.search(r"\{[\s\S]*\}", text)
+        if m:
+            parsed = json.loads(m.group(0))
+            allowed = {n.lower() for n in names}
+            matched = [
+                str(x).lower().strip()
+                for x in (parsed.get("matched") or [])
+                if str(x).lower().strip() in allowed
+            ]
+            # de-dup while preserving order
+            seen = set()
+            matched = [x for x in matched if not (x in seen or seen.add(x))]
+            return {"matched": matched, "concept": str(parsed.get("concept", "")).strip()}
+    except Exception as e:
+        current_app.logger.exception(f"[Groq] filter_assets_semantically failed: {e}")
+    return {"matched": [], "concept": ""}
